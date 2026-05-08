@@ -20,7 +20,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 BOT_TOKEN  = "8727634438:AAGKhXdxQNUqgMv6EBvVZ1DwVZDSQvzTuAM"
 CHANNEL_ID = "@твой_канал"
-ADMIN_ID   = 123456789            
+ADMIN_ID   = 32275597            
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
