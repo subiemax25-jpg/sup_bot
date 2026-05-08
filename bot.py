@@ -17,7 +17,7 @@ from telegram.ext import (
 #  НАСТРОЙКИ  ← заполни эти три строки
 # ─────────────────────────────────────────────
 BOT_TOKEN  = "8727634438:AAGKhXdxQNUqgMv6EBvVZ1DwVZDSQvzTuAM"
-CHANNEL_ID = "@твой_канал"
+CHANNEL_ID = "@super_sup_vl"
 ADMIN_ID   = 32275597
 # ─────────────────────────────────────────────
 
