@@ -2,13 +2,11 @@
 🏄 САП-бот для публикации анонсов прогулок в Telegram-канал
 ============================================================
 Установка:  pip install python-telegram-bot
-Запуск:     python bot.py
+Запуск:     python3 bot.py
 """
 
 import logging
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ConversationHandler, CallbackQueryHandler,
@@ -20,7 +18,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 BOT_TOKEN  = "8727634438:AAGKhXdxQNUqgMv6EBvVZ1DwVZDSQvzTuAM"
 CHANNEL_ID = "@твой_канал"
-ADMIN_ID   = 32275597 
+ADMIN_ID   = 32275597
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -30,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния диалога
-DATE, LOCATION, TIME, DURATION, LEVEL, SPOTS, CONTACT, PHOTO, CONFIRM = range(9)
+DATE, LOCATION, TIME, DURATION, LEVEL, SPOTS, CONTACT, CONFIRM = range(8)
 
 
 # ══════════════════════════════════════════════════════
@@ -41,7 +39,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
         "🏄‍♂️ *Привет! Я помогу составить анонс САП-прогулки.*\n\n"
-        "Отвечай на вопросы — я сформирую красивый пост и отправлю его на проверку организатору.\n\n"
+        "Отвечай на вопросы — я сформирую пост и отправлю его на проверку организатору.\n\n"
         "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_",
         parse_mode="Markdown"
     )
@@ -122,32 +120,20 @@ async def get_spots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["contact"] = update.message.text.strip()
-    keyboard = [
-        [InlineKeyboardButton("📷 Прикрепить фото", callback_data="add_photo")],
-        [InlineKeyboardButton("⏭ Пропустить",        callback_data="skip_photo")],
-    ]
+    d = ctx.user_data
+    text = build_post(d)
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Отправить на проверку", callback_data="submit"),
+            InlineKeyboardButton("✏️ Начать заново",         callback_data="restart"),
+        ]
+    ])
     await update.message.reply_text(
-        "🖼 *Хочешь добавить фото к анонсу?*",
+        f"*Вот твой анонс:*\n\n{text}",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
-    return PHOTO
-
-
-async def photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "add_photo":
-        await q.edit_message_text("📷 Отправь фото для анонса:")
-        return PHOTO
-    else:
-        ctx.user_data["photo_id"] = None
-        return await show_preview(update, ctx, from_callback=True)
-
-
-async def get_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["photo_id"] = update.message.photo[-1].file_id
-    return await show_preview(update, ctx, from_callback=False)
+    return CONFIRM
 
 
 # ══════════════════════════════════════════════════════
@@ -169,24 +155,6 @@ def build_post(d: dict) -> str:
     )
 
 
-async def show_preview(update: Update, ctx: ContextTypes.DEFAULT_TYPE, from_callback: bool):
-    d = ctx.user_data
-    text = build_post(d)
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Отправить на проверку", callback_data="submit"),
-            InlineKeyboardButton("✏️ Начать заново",         callback_data="restart"),
-        ]
-    ])
-    sender = update.callback_query.message if from_callback else update.message
-    await sender.reply_text(
-        f"*Вот твой анонс:*\n\n{text}",
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
-    return CONFIRM
-
-
 async def confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -200,11 +168,16 @@ async def confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     author = q.from_user
     author_info = f"@{author.username}" if author.username else f"id:{author.id}"
 
+    # Сохраняем в bot_data — общее хранилище, не теряется между хендлерами
+    if "pending" not in ctx.bot_data:
+        ctx.bot_data["pending"] = {}
+    ctx.bot_data["pending"][str(author.id)] = post_text
+
     mod_text = (
         f"📬 *Новый анонс от* {author_info}\n"
-        f"{'─' * 30}\n\n"
+        f"{'─' * 28}\n\n"
         f"{post_text}\n\n"
-        f"{'─' * 30}\n"
+        f"{'─' * 28}\n"
         f"Опубликовать в канал?"
     )
     mod_keyboard = InlineKeyboardMarkup([
@@ -214,27 +187,12 @@ async def confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]
     ])
 
-    if d.get("photo_id"):
-        await ctx.bot.send_photo(
-            ADMIN_ID,
-            photo=d["photo_id"],
-            caption=mod_text,
-            parse_mode="Markdown",
-            reply_markup=mod_keyboard
-        )
-    else:
-        await ctx.bot.send_message(
-            ADMIN_ID,
-            text=mod_text,
-            parse_mode="Markdown",
-            reply_markup=mod_keyboard
-        )
-
-    # Сохраняем пост в памяти для публикации после одобрения
-    ctx.application.user_data.setdefault("pending", {})[str(author.id)] = {
-        "text":     post_text,
-        "photo_id": d.get("photo_id"),
-    }
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        text=mod_text,
+        parse_mode="Markdown",
+        reply_markup=mod_keyboard
+    )
 
     await q.edit_message_text(
         "⏳ *Анонс отправлен на проверку организатору.*\n"
@@ -257,39 +215,28 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     action, user_id_str = q.data.split(":")
-    pending = ctx.application.user_data.get("pending", {})
-    post_data = pending.pop(user_id_str, None)
+    pending = ctx.bot_data.get("pending", {})
+    post_text = pending.pop(user_id_str, None)
 
-    if not post_data:
-        await q.edit_message_text("⚠️ Данные анонса не найдены (возможно, бот перезапускался).")
+    if not post_text:
+        await q.edit_message_text("⚠️ Данные анонса не найдены (бот был перезапущен). Попроси автора отправить анонс повторно.")
         return
-
-    has_photo = bool(q.message.photo)
 
     if action == "approve":
         try:
-            if post_data["photo_id"]:
-                await ctx.bot.send_photo(
-                    CHANNEL_ID,
-                    photo=post_data["photo_id"],
-                    caption=post_data["text"],
-                    parse_mode="Markdown"
-                )
-            else:
-                await ctx.bot.send_message(
-                    CHANNEL_ID,
-                    text=post_data["text"],
-                    parse_mode="Markdown"
-                )
+            await ctx.bot.send_message(
+                CHANNEL_ID,
+                text=post_text,
+                parse_mode="Markdown"
+            )
         except Exception as e:
-            await ctx.bot.send_message(ADMIN_ID, f"⚠️ Ошибка при публикации в канал:\n{e}")
+            await q.edit_message_text(f"⚠️ Ошибка при публикации в канал:\n{e}")
             return
 
-        result_text = f"✅ Опубликовано в канале!\n\n{post_data['text']}"
-        if has_photo:
-            await q.edit_message_caption(caption=result_text, parse_mode="Markdown")
-        else:
-            await q.edit_message_text(result_text, parse_mode="Markdown")
+        await q.edit_message_text(
+            f"✅ Опубликовано в канале!\n\n{post_text}",
+            parse_mode="Markdown"
+        )
         try:
             await ctx.bot.send_message(
                 int(user_id_str),
@@ -300,11 +247,10 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     elif action == "reject":
-        result_text = f"❌ Анонс отклонён.\n\n{post_data['text']}"
-        if has_photo:
-            await q.edit_message_caption(caption=result_text, parse_mode="Markdown")
-        else:
-            await q.edit_message_text(result_text, parse_mode="Markdown")
+        await q.edit_message_text(
+            f"❌ Анонс отклонён.\n\n{post_text}",
+            parse_mode="Markdown"
+        )
         try:
             await ctx.bot.send_message(
                 int(user_id_str),
@@ -333,11 +279,7 @@ def main():
             LEVEL:    [CallbackQueryHandler(get_level, pattern="^level_")],
             SPOTS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_spots)],
             CONTACT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
-            PHOTO: [
-                CallbackQueryHandler(photo_choice, pattern="^(add_photo|skip_photo)$"),
-                MessageHandler(filters.PHOTO, get_photo),
-            ],
-            CONFIRM: [CallbackQueryHandler(confirm, pattern="^(submit|restart)$")],
+            CONFIRM:  [CallbackQueryHandler(confirm, pattern="^(submit|restart)$")],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
