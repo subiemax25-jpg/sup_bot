@@ -112,7 +112,7 @@ async def get_level(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["level"] = levels[q.data]
     await q.edit_message_text(
         f"Уровень: *{ctx.user_data['level']}* ✓\n\n"
-        "📞 *Контакт для записи?*\n_Пример: @username или +7 900 000-00-00_",
+        "👤 *Кто предложил прогулку?*\n_Пример: @username_",
         parse_mode="Markdown"
     )
     return CONTACT
@@ -164,7 +164,7 @@ def build_post(d: dict) -> str:
         f"📍  *Место сбора:* {d['location']}\n"
         f"🗺  *Маршрут:* {d['route']}\n"
         f"🎯  *Уровень:* {d['level']}\n\n"
-        f"📞  *Запись:* {d['contact']}\n\n"
+        f"👤  *Предложил:* {d['contact']}\n\n"
         f"#сап #сапсёрфинг #прогулка #paddle #sup"
     )
 
