@@ -28,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния диалога
-DATE, LOCATION, TIME, DURATION, LEVEL, SPOTS, CONTACT, PHOTO, CONFIRM = range(9)
+DATE, LOCATION, ROUTE, TIME, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 
 
 # ══════════════════════════════════════════════════════
@@ -53,7 +53,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def get_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["date"] = update.message.text.strip()
     await update.message.reply_text(
-        "📍 *Место старта?*\n_Пример: Набережная Горького, у моста_",
+        "📍 *Место сбора?*\n_Пример: Набережная Горького, у моста_",
         parse_mode="Markdown"
     )
     return LOCATION
@@ -70,6 +70,15 @@ async def get_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["time"] = update.message.text.strip()
+    await update.message.reply_text(
+        "🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно_",
+        parse_mode="Markdown"
+    )
+    return ROUTE
+
+
+async def get_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["route"] = update.message.text.strip()
     await update.message.reply_text(
         "🕐 *Продолжительность прогулки?*\n_Пример: 2 часа_",
         parse_mode="Markdown"
@@ -103,15 +112,6 @@ async def get_level(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["level"] = levels[q.data]
     await q.edit_message_text(
         f"Уровень: *{ctx.user_data['level']}* ✓\n\n"
-        "👥 *Сколько мест?*\n_Пример: 8 мест или Без ограничений_",
-        parse_mode="Markdown"
-    )
-    return SPOTS
-
-
-async def get_spots(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["spots"] = update.message.text.strip()
-    await update.message.reply_text(
         "📞 *Контакт для записи?*\n_Пример: @username или +7 900 000-00-00_",
         parse_mode="Markdown"
     )
@@ -161,9 +161,9 @@ def build_post(d: dict) -> str:
         f"📅  *Дата:* {d['date']}\n"
         f"⏰  *Сбор:* {d['time']}\n"
         f"🕐  *Длительность:* {d['duration']}\n"
-        f"📍  *Место:* {d['location']}\n"
-        f"🎯  *Уровень:* {d['level']}\n"
-        f"👥  *Мест:* {d['spots']}\n\n"
+        f"📍  *Место сбора:* {d['location']}\n"
+        f"🗺  *Маршрут:* {d['route']}\n"
+        f"🎯  *Уровень:* {d['level']}\n\n"
         f"📞  *Запись:* {d['contact']}\n\n"
         f"#сап #сапсёрфинг #прогулка #paddle #sup"
     )
@@ -327,9 +327,9 @@ def main():
             DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
             TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_time)],
+            ROUTE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_route)],
             DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
             LEVEL:    [CallbackQueryHandler(get_level, pattern="^level_")],
-            SPOTS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_spots)],
             CONTACT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
             PHOTO: [
                 CallbackQueryHandler(photo_choice, pattern="^(add_photo|skip_photo)$"),
