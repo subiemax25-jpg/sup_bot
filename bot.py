@@ -18,10 +18,9 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 #  НАСТРОЙКИ  ← заполни эти три строки
 # ─────────────────────────────────────────────
-import os
-BOT_TOKEN    = os.environ ["8727634438:AAGegRdl9MPpfRleQrKII0x0lJvbCHuzYbA"] 
-CHANNEL_ID   = os.environ ["@super_sup_vl"]
-ADMIN_ID     = int(os.environ[32275597])                  
+BOT_TOKEN  = "8727634438:AAGKhXdxQNUqgMv6EBvVZ1DwVZDSQvzTuAM"
+CHANNEL_ID = "@твой_канал"
+ADMIN_ID   = 123456789            
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
