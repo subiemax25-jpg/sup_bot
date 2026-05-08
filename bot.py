@@ -20,7 +20,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 BOT_TOKEN  = "8727634438:AAGKhXdxQNUqgMv6EBvVZ1DwVZDSQvzTuAM"
 CHANNEL_ID = "@твой_канал"
-ADMIN_ID   = 32275597            
+ADMIN_ID   = 32275597 
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -157,7 +157,7 @@ async def get_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def build_post(d: dict) -> str:
     return (
         f"🏄‍♂️ *САП-ПРОГУЛКА*\n"
-        f"{'━' * 28}\n\n"
+        f"{'━' * 16}\n\n"
         f"📅  *Дата:* {d['date']}\n"
         f"⏰  *Сбор:* {d['time']}\n"
         f"🕐  *Длительность:* {d['duration']}\n"
@@ -264,6 +264,8 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⚠️ Данные анонса не найдены (возможно, бот перезапускался).")
         return
 
+    has_photo = bool(q.message.photo)
+
     if action == "approve":
         if post_data["photo_id"]:
             await ctx.bot.send_photo(
@@ -278,10 +280,11 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text=post_data["text"],
                 parse_mode="Markdown"
             )
-        await q.edit_message_text(
-            f"✅ Опубликовано в канале!\n\n{post_data['text']}",
-            parse_mode="Markdown"
-        )
+        result_text = f"✅ Опубликовано в канале!\n\n{post_data['text']}"
+        if has_photo:
+            await q.edit_message_caption(caption=result_text, parse_mode="Markdown")
+        else:
+            await q.edit_message_text(result_text, parse_mode="Markdown")
         try:
             await ctx.bot.send_message(
                 int(user_id_str),
@@ -292,10 +295,11 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     elif action == "reject":
-        await q.edit_message_text(
-            f"❌ Анонс отклонён.\n\n{post_data['text']}",
-            parse_mode="Markdown"
-        )
+        result_text = f"❌ Анонс отклонён.\n\n{post_data['text']}"
+        if has_photo:
+            await q.edit_message_caption(caption=result_text, parse_mode="Markdown")
+        else:
+            await q.edit_message_text(result_text, parse_mode="Markdown")
         try:
             await ctx.bot.send_message(
                 int(user_id_str),
