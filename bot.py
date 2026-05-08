@@ -267,19 +267,24 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     has_photo = bool(q.message.photo)
 
     if action == "approve":
-        if post_data["photo_id"]:
-            await ctx.bot.send_photo(
-                CHANNEL_ID,
-                photo=post_data["photo_id"],
-                caption=post_data["text"],
-                parse_mode="Markdown"
-            )
-        else:
-            await ctx.bot.send_message(
-                CHANNEL_ID,
-                text=post_data["text"],
-                parse_mode="Markdown"
-            )
+        try:
+            if post_data["photo_id"]:
+                await ctx.bot.send_photo(
+                    CHANNEL_ID,
+                    photo=post_data["photo_id"],
+                    caption=post_data["text"],
+                    parse_mode="Markdown"
+                )
+            else:
+                await ctx.bot.send_message(
+                    CHANNEL_ID,
+                    text=post_data["text"],
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            await ctx.bot.send_message(ADMIN_ID, f"⚠️ Ошибка при публикации в канал:\n{e}")
+            return
+
         result_text = f"✅ Опубликовано в канале!\n\n{post_data['text']}"
         if has_photo:
             await q.edit_message_caption(caption=result_text, parse_mode="Markdown")
