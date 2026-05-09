@@ -504,6 +504,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        per_message=False,
     )
 
     # Диалог — отзыв
@@ -519,6 +520,7 @@ def main():
         },
         fallbacks=[CommandHandler("отзыв", review_start)],
         allow_reentry=True,
+        per_message=False,
     )
 
     app.add_handler(announce_conv)
