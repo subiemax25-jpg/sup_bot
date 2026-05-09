@@ -331,7 +331,7 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     if q.data == "review_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Напиши /отзыв")
+        await q.edit_message_text("↩️ Начинаем заново. Напиши /review")
         return ConversationHandler.END
 
     author      = q.from_user
@@ -471,7 +471,7 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await ctx.bot.send_message(
                 user_id,
                 "😔 *К сожалению, твой пост отклонён организатором.*\n"
-                "Хочешь попробовать снова? Напиши /start или /отзыв",
+                "Хочешь попробовать снова? Напиши /start или /review",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -509,7 +509,7 @@ def main():
 
     # Диалог — отзыв
     review_conv = ConversationHandler(
-        entry_points=[CommandHandler("отзыв", review_start)],
+        entry_points=[CommandHandler("review", review_start)],
         states={
             REVIEW_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)],
             REVIEW_MEDIA: [
@@ -518,7 +518,7 @@ def main():
             ],
             REVIEW_CONFIRM: [CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("отзыв", review_start)],
+        fallbacks=[CommandHandler("review", review_start)],
         allow_reentry=True,
         per_message=False,
     )
