@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Анонс
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 # Отзыв
-REVIEW_COMMENT, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 12)
+REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
 
 
 # ══════════════════════════════════════════════════════
@@ -254,6 +254,17 @@ async def review_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def get_review_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["review_comment"] = update.message.text.strip()
     await update.message.reply_text(
+        "👤 *Как тебя подписать?*\n"
+        "_Напиши своё имя или @username_\n"
+        "_Пример: Максим или @maximvk_",
+        parse_mode="Markdown"
+    )
+    return REVIEW_AUTHOR
+
+
+async def get_review_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["review_author"] = update.message.text.strip()
+    await update.message.reply_text(
         "📸 *Теперь отправь фото или видео с прогулки.*\n\n"
         "Можно загрузить до 10 файлов — отправляй по одному.\n"
         "Когда закончишь — нажми кнопку *«Готово»*.",
@@ -300,8 +311,8 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    media = ctx.user_data.get("review_media", [])
     comment = ctx.user_data.get("review_comment", "")
+    author  = ctx.user_data.get("review_author", "")
 
     if not media:
         await q.edit_message_text(
@@ -310,10 +321,10 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return REVIEW_MEDIA
 
-    # Показываем превью
     preview_text = (
         f"*Твой отзыв:*\n\n"
         f"💬 {comment}\n\n"
+        f"Отзыв оставил: {author}\n\n"
         f"📎 Файлов: {len(media)}"
     )
     keyboard = InlineKeyboardMarkup([
@@ -335,7 +346,7 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     author      = q.from_user
-    author_info = f"@{author.username}" if author.username else f"id:{author.id}"
+    author_info = ctx.user_data.get("review_author", f"@{author.username}" if author.username else f"id:{author.id}")
     comment     = ctx.user_data.get("review_comment", "")
     media       = ctx.user_data.get("review_media", [])
 
@@ -444,7 +455,7 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 review_caption = (
                     f"🌊 *Впечатления от прогулки*\n\n"
                     f"💬 {post_data['comment']}\n\n"
-                    f"👤 {post_data['author']}\n\n"
+                    f"Отзыв оставил: {post_data['author']}\n\n"
                     f"#сап #отзыв #впечатления"
                 )
                 await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=review_caption)
@@ -512,6 +523,7 @@ def main():
         entry_points=[CommandHandler("review", review_start)],
         states={
             REVIEW_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)],
+            REVIEW_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)],
             REVIEW_MEDIA: [
                 MessageHandler(filters.PHOTO | filters.VIDEO, get_review_media),
                 CallbackQueryHandler(review_done, pattern="^review_done$"),
