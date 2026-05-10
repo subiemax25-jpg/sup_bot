@@ -8,7 +8,7 @@
 import logging
 import asyncio
 import aiohttp
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     InputMediaPhoto, InputMediaVideo
@@ -283,6 +283,45 @@ async def _fetch_all_weather() -> list[dict]:
     return days
 
 
+# ──────────────────────────────────────────────
+#  РЕЙТИНГ — константы и вспомогательные функции
+# ──────────────────────────────────────────────
+RANKS = [
+    (21, "🔱 Посейдон"),
+    (11, "🦈 Кракен"),
+    (6,  "🐙 Ларга"),
+    (3,  "🦀 Баклан"),
+    (1,  "🪸 Планктон"),
+]
+
+def _get_rank(points: int) -> str:
+    for min_pts, title in RANKS:
+        if points >= min_pts:
+            return title
+    return "🪸 Планктон"
+
+def _pts_word(n: int) -> str:
+    if 11 <= n % 100 <= 14: return "очков"
+    r = n % 10
+    if r == 1:       return "очко"
+    if 2 <= r <= 4:  return "очка"
+    return "очков"
+
+def _display_name(entry: dict) -> str:
+    return f"@{entry['username']}" if entry.get("username") else entry.get("name", "Участник")
+
+def _add_points(bot_data: dict, user_id: int, name: str, username: str | None, points: int):
+    if "ratings" not in bot_data:
+        bot_data["ratings"] = {}
+    key = str(user_id)
+    if key not in bot_data["ratings"]:
+        bot_data["ratings"][key] = {"name": name, "username": username, "points": 0}
+    else:
+        bot_data["ratings"][key]["name"]     = name
+        bot_data["ratings"][key]["username"] = username
+    bot_data["ratings"][key]["points"] += points
+
+
 # ══════════════════════════════════════════════════════
 #  АНОНС — сбор данных
 # ══════════════════════════════════════════════════════
@@ -445,9 +484,12 @@ async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if "pending" not in ctx.bot_data:
         ctx.bot_data["pending"] = {}
     ctx.bot_data["pending"][f"announce_{author.id}"] = {
-        "text":     post_text,
-        "photo_id": photo_id,
-        "type":     "announce",
+        "text":           post_text,
+        "photo_id":       photo_id,
+        "type":           "announce",
+        "author_id":      author.id,
+        "author_name":    author.first_name,
+        "author_username": author.username,
         "schedule_entry": {
             "date":     d.get("date", ""),
             "time":     d.get("time", ""),
@@ -607,10 +649,13 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if "pending" not in ctx.bot_data:
         ctx.bot_data["pending"] = {}
     ctx.bot_data["pending"][f"review_{author.id}"] = {
-        "type":    "review",
-        "comment": comment,
-        "media":   media,
-        "author":  author_info,
+        "type":           "review",
+        "comment":        comment,
+        "media":          media,
+        "author":         author_info,
+        "author_id":      author.id,
+        "author_name":    author.first_name,
+        "author_username": author.username,
     }
 
     # Отправляем медиа-альбом администратору
@@ -726,10 +771,22 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
         await q.edit_message_text(f"✅ {label} опубликован в канале!")
+
+        # Начисляем очки автору
+        points = 1 if post_data["type"] == "announce" else 2
+        _add_points(
+            ctx.bot_data,
+            user_id,
+            post_data.get("author_name", "Участник"),
+            post_data.get("author_username"),
+            points,
+        )
+        pts_msg = f"+{points} {_pts_word(points)} в рейтинге 🏆"
+
         try:
             await ctx.bot.send_message(
                 user_id,
-                "🎉 *Твой пост одобрен и опубликован в канале!*",
+                f"🎉 *Твой пост одобрен и опубликован в канале!*\n_{pts_msg}_",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -872,6 +929,115 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
+#  РЕЙТИНГ — команды и итоги года
+# ══════════════════════════════════════════════════════
+
+async def top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Показывает общий рейтинг участников."""
+    ratings = ctx.bot_data.get("ratings", {})
+    year    = datetime.now(VLAD_TZ).year
+
+    if not ratings:
+        await update.message.reply_text(
+            "📊 *Рейтинг пока пуст*\n\n"
+            "Создавай анонсы и оставляй отзывы — за каждый начисляются очки!\n\n"
+            "🪸 За отзыв о прогулке — 2 очка\n"
+            "🦀 За опубликованный анонс — 1 очко",
+            parse_mode="Markdown"
+        )
+        return
+
+    sorted_users = sorted(ratings.items(), key=lambda x: x[1]["points"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+
+    lines = [f"🏆 *Рейтинг сезона {year}*\n"]
+    for i, (uid, data) in enumerate(sorted_users, 1):
+        medal      = medals[i - 1] if i <= 3 else f"{i}."
+        name       = _display_name(data)
+        rank_title = _get_rank(data["points"])
+        pts        = data["points"]
+        lines.append(f"{medal} {rank_title} {name} — {pts} {_pts_word(pts)}")
+
+    lines.append(
+        "\n_🪸 За отзыв о прогулке — 2 очка_\n"
+        "_🦀 За опубликованный анонс — 1 очко_"
+    )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def rank(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Показывает личный рейтинг пользователя."""
+    user    = update.effective_user
+    ratings = ctx.bot_data.get("ratings", {})
+    data    = ratings.get(str(user.id))
+
+    if not data:
+        await update.message.reply_text(
+            "📊 *Ты пока не в рейтинге*\n\n"
+            "Создай анонс прогулки или оставь отзыв — и очки появятся!\n\n"
+            "🪸 За отзыв о прогулке — 2 очка\n"
+            "🦀 За опубликованный анонс — 1 очко",
+            parse_mode="Markdown"
+        )
+        return
+
+    pts          = data["points"]
+    current_rank = _get_rank(pts)
+
+    # Следующее звание
+    next_info = "🏆 Ты достиг высшего звания — Посейдон!\n"
+    for min_pts, title in reversed(RANKS):
+        if pts < min_pts:
+            needed    = min_pts - pts
+            next_info = f"🎯 До звания *{title}* — ещё {needed} {_pts_word(needed)}\n"
+            break
+
+    await update.message.reply_text(
+        f"*Твой рейтинг*\n\n"
+        f"Звание: {current_rank}\n"
+        f"Очки: {pts} {_pts_word(pts)}\n\n"
+        f"{next_info}\n"
+        f"_🪸 За отзыв — 2 очка  |  🦀 За анонс — 1 очко_",
+        parse_mode="Markdown"
+    )
+
+
+async def year_end_job(context: ContextTypes.DEFAULT_TYPE):
+    """31 декабря публикует итоги года и сбрасывает рейтинг."""
+    now = datetime.now(VLAD_TZ)
+    if now.month != 12 or now.day != 31:
+        return
+
+    ratings = context.bot_data.get("ratings", {})
+    year    = now.year
+
+    if ratings:
+        sorted_users = sorted(ratings.items(), key=lambda x: x[1]["points"], reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        lines  = [f"🎉 *Итоги сезона {year}!*\n\nНаши лучшие сёрферы года:\n"]
+
+        for i, (uid, data) in enumerate(sorted_users[:10], 1):
+            medal      = medals[i - 1] if i <= 3 else f"{i}."
+            name       = _display_name(data)
+            rank_title = _get_rank(data["points"])
+            pts        = data["points"]
+            lines.append(f"{medal} {rank_title} {name} — {pts} {_pts_word(pts)}")
+
+        lines.append(f"\nВсего участников в рейтинге: {len(ratings)}")
+        lines.append("Поздравляем всех! До встречи на воде в следующем году 🏄‍♂️")
+
+        try:
+            await context.bot.send_message(
+                CHANNEL_ID, "\n".join(lines), parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Year-end publish error: {e}")
+
+    context.bot_data["ratings"] = {}
+    logger.info(f"Рейтинг сезона {year} сброшен.")
+
+
+# ══════════════════════════════════════════════════════
 #  ЗАПУСК
 # ══════════════════════════════════════════════════════
 
@@ -921,7 +1087,15 @@ def main():
     app.add_handler(review_conv)
     app.add_handler(CommandHandler("schedule", schedule))
     app.add_handler(CommandHandler("weather", weather))
+    app.add_handler(CommandHandler("top", top))
+    app.add_handler(CommandHandler("rank", rank))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
+
+    # Публикация итогов и сброс рейтинга 31 декабря в 23:59 по Владивостоку
+    app.job_queue.run_daily(
+        year_end_job,
+        time=dtime(23, 59, tzinfo=VLAD_TZ),
+    )
 
     logger.info("🏄 САП-бот запущен. Ctrl+C для остановки.")
     app.run_polling(drop_pending_updates=True)
