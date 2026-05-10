@@ -204,6 +204,15 @@ async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "text":     post_text,
         "photo_id": photo_id,
         "type":     "announce",
+        "schedule_entry": {
+            "date":     d.get("date", ""),
+            "time":     d.get("time", ""),
+            "location": d.get("location", ""),
+            "route":    d.get("route", ""),
+            "duration": d.get("duration", ""),
+            "level":    d.get("level", ""),
+            "contact":  d.get("contact", ""),
+        },
     }
 
     mod_keyboard = InlineKeyboardMarkup([
@@ -451,6 +460,12 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         text=post_data["text"],
                         parse_mode="Markdown"
                     )
+                # Сохраняем в расписание
+                if "schedule" not in ctx.bot_data:
+                    ctx.bot_data["schedule"] = []
+                ctx.bot_data["schedule"].append(post_data["schedule_entry"])
+                # Храним не более 20 анонсов
+                ctx.bot_data["schedule"] = ctx.bot_data["schedule"][-20:]
 
             elif post_data["type"] == "review":
                 review_caption = (
@@ -488,6 +503,34 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+
+
+# ══════════════════════════════════════════════════════
+#  РАСПИСАНИЕ
+# ══════════════════════════════════════════════════════
+
+async def schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    entries = ctx.bot_data.get("schedule", [])
+
+    if not entries:
+        await update.message.reply_text(
+            "📭 *Ближайших прогулок пока нет.*\n\n"
+            "Создай первый анонс через /start 🏄‍♂️",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = ["🗓 *Ближайшие САП-прогулки:*\n"]
+    for i, e in enumerate(entries, 1):
+        lines.append(
+            f"*{i}. {e['date']}*\n"
+            f"⏰ {e['time']}  🎯 {e['level']}\n"
+            f"📍 {e['location']}\n"
+            f"👤 {e['contact']}\n"
+        )
+
+    lines.append("_Подробности каждой прогулки — в канале._")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ══════════════════════════════════════════════════════
@@ -538,6 +581,7 @@ def main():
 
     app.add_handler(announce_conv)
     app.add_handler(review_conv)
+    app.add_handler(CommandHandler("schedule", schedule))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
 
     logger.info("🏄 САП-бот запущен. Ctrl+C для остановки.")
