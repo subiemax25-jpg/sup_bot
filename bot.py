@@ -826,6 +826,75 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append("_⚠️ Прогноз приблизительный и может меняться. Проверяйте погоду в разных источниках перед выходом на воду._")
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
+    # Сохраняем user_id запросившего и уведомляем администратора
+    requester = update.effective_user
+    requester_info = f"@{requester.username}" if requester.username else f"id:{requester.id}"
+    ctx.bot_data["windy_request"] = requester.id
+
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        f"🗺 *{requester_info}* запросил прогноз погоды.\n\n"
+        f"Открой Windy для острова Русский и пришли сюда скриншот — "
+        f"я перешлю его с пояснением.",
+        parse_mode="Markdown"
+    )
+
+
+# ══════════════════════════════════════════════════════
+#  WINDY — пересылка скриншота с пояснением
+# ══════════════════════════════════════════════════════
+
+WINDY_EXPLANATION = (
+    "🗺 *Скриншот с Windy — остров Русский*\n\n"
+    "Как читать этот экран:\n\n"
+    "*Карта (анимация частиц):*\n"
+    "Движущиеся линии — это ветер. Чем гуще и быстрее — тем сильнее ветер.\n"
+    "🔵 Синий/зелёный — слабый ветер, спокойно\n"
+    "🟡 Жёлтый — умеренный, стоит выбирать укрытое место\n"
+    "🟠 Оранжевый — сильный, только для опытных\n"
+    "🔴 Красный — очень сильный, выход опасен\n\n"
+    "*Стрелки на карте:*\n"
+    "🟢 Зелёная стрелка — направление и сила ветра (м/с)\n"
+    "🟠 Оранжевая стрелка — направление и высота свелла (м)\n\n"
+    "*Таблица внизу (по столбцам — часы):*\n"
+    "↗️ Стрелки — направление ветра\n"
+    "м/с — скорость ветра / порывы\n"
+    "m (первая строка) — высота волны в метрах\n"
+    "m (вторая строка) — высота свелла в метрах\n"
+    "s — период свелла в секундах (чем больше — тем мощнее)\n\n"
+    "*Для САП-сёрфинга:*\n"
+    "✅ Комфортно: ветер до 5 м/с, волна до 0.3 м\n"
+    "⚠️ Осторожно: ветер 5-8 м/с, волна 0.3-0.6 м\n"
+    "🚫 Не рекомендуется: ветер выше 10 м/с, волна выше 0.6 м"
+)
+
+async def handle_windy_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Когда администратор присылает фото — пересылаем его пользователю с пояснением."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    requester_id = ctx.bot_data.get("windy_request")
+    if not requester_id:
+        await update.message.reply_text(
+            "⚠️ Нет активного запроса погоды. "
+            "Скриншот будет переслан как только кто-то запросит /weather."
+        )
+        return
+
+    photo_id = update.message.photo[-1].file_id
+
+    try:
+        await ctx.bot.send_photo(
+            requester_id,
+            photo=photo_id,
+            caption=WINDY_EXPLANATION,
+            parse_mode="Markdown"
+        )
+        ctx.bot_data.pop("windy_request", None)
+        await update.message.reply_text("✅ Скриншот Windy отправлен пользователю!")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Не удалось отправить: {e}")
+
 
 # ══════════════════════════════════════════════════════
 #  ЗАПУСК
@@ -878,6 +947,9 @@ def main():
     app.add_handler(CommandHandler("schedule", schedule))
     app.add_handler(CommandHandler("weather", weather))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
+    app.add_handler(MessageHandler(
+        filters.PHOTO & filters.User(ADMIN_ID), handle_windy_photo
+    ))
 
     logger.info("🏄 САП-бот запущен. Ctrl+C для остановки.")
     app.run_polling(drop_pending_updates=True)
