@@ -550,7 +550,7 @@ async def get_review_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["review_comment"] = update.message.text.strip()
     await update.message.reply_text(
         "👤 *Как тебя подписать?*\n"
-        "_Напиши своё имя или @username_\n"
+        "_Укажи только одного автора — своё имя или @username_\n"
         "_Пример: Максим или @maximvk_",
         parse_mode="Markdown"
     )
