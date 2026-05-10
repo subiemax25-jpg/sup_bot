@@ -6,6 +6,8 @@
 """
 
 import logging
+import aiohttp
+from datetime import date, timedelta
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     InputMediaPhoto, InputMediaVideo
@@ -37,6 +39,116 @@ logger = logging.getLogger(__name__)
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 # Отзыв
 REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
+
+# ──────────────────────────────────────────────
+#  ПОГОДА — константы и вспомогательные функции
+# ──────────────────────────────────────────────
+SUP_LAT = 42.948
+SUP_LON = 131.941
+
+MONTHS_RU = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
+             "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+def _deg_to_compass(deg: float) -> str:
+    dirs = ["С","ССВ","СВ","ВСВ","В","ВЮВ","ЮВ","ЮЮВ",
+            "Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"]
+    return dirs[round(deg / 22.5) % 16]
+
+def _wind_dot(speed: float) -> str:
+    if speed < 4:  return "🟢"
+    if speed < 7:  return "🟡"
+    if speed < 11: return "🟠"
+    return "🔴"
+
+def _wave_dot(height: float) -> str:
+    if height < 0.3: return "🟢"
+    if height < 0.6: return "🟡"
+    if height < 1.0: return "🟠"
+    return "🔴"
+
+def _verdict(wind: float, wave: float) -> str:
+    if wind >= 12 or wave >= 1.0:
+        return "🔴 Выход не рекомендуется"
+    if wind >= 8 or wave >= 0.6:
+        return "🟠 Сложные условия — только опытным"
+    if wind >= 5 or wave >= 0.3:
+        return "🟡 Приемлемо — выбирай укрытое место"
+    return "🟢 Отлично — можно идти везде"
+
+def _location_advice(wind_dir: float, wind: float, wave: float) -> str:
+    """Рекомендация по локации на острове Русский."""
+    if wind < 4 and wave < 0.3:
+        return "Штиль 🌊 Любая точка острова — иди куда хочешь!"
+    if wind >= 12:
+        return "Слишком сильный ветер. Выходить опасно. Если очень нужно — только закрытые бухты: Новик или Аякс."
+
+    # Подветренная сторона по направлению ветра
+    if wind_dir < 22.5 or wind_dir >= 337.5:   # С
+        spot = "бухта Новик (южная сторона острова)"
+    elif wind_dir < 67.5:                        # СВ
+        spot = "западная сторона — Амурский залив"
+    elif wind_dir < 112.5:                       # В
+        spot = "западная сторона — Амурский залив"
+    elif wind_dir < 157.5:                       # ЮВ
+        spot = "бухта Аякс (северная сторона)"
+    elif wind_dir < 202.5:                       # Ю
+        spot = "северный берег острова, ближе к Владивостоку"
+    elif wind_dir < 247.5:                       # ЮЗ
+        spot = "восточная сторона — Уссурийский залив"
+    elif wind_dir < 292.5:                       # З
+        spot = "восточная сторона — Уссурийский залив"
+    else:                                        # СЗ
+        spot = "юго-восточная сторона острова"
+
+    return f"Лучшее место: {spot} — там будет укрытие от ветра."
+
+def _wmo_icon(code: int) -> str:
+    if code == 0:          return "☀️"
+    if code <= 3:          return "⛅"
+    if code <= 48:         return "🌫"
+    if code <= 67:         return "🌧"
+    if code <= 77:         return "❄️"
+    if code <= 82:         return "🌦"
+    if code <= 86:         return "🌨"
+    return "⛈"
+
+def _date_label(iso: str) -> str:
+    d = date.fromisoformat(iso)
+    today = date.today()
+    if d == today:              prefix = "Сегодня"
+    elif d == today + timedelta(days=1): prefix = "Завтра"
+    else:                       prefix = ""
+    return f"{prefix}, {d.day} {MONTHS_RU[d.month]}" if prefix else f"{d.day} {MONTHS_RU[d.month]}"
+
+async def _fetch_weather() -> tuple:
+    """Запрашивает прогноз погоды и морских условий с Open-Meteo."""
+    params_weather = {
+        "latitude": SUP_LAT, "longitude": SUP_LON,
+        "daily": ",".join([
+            "weathercode", "temperature_2m_max", "temperature_2m_min",
+            "windspeed_10m_max", "windgusts_10m_max",
+            "winddirection_10m_dominant", "precipitation_sum",
+        ]),
+        "wind_speed_unit": "ms",
+        "timezone": "Asia/Vladivostok",
+        "forecast_days": 2,
+    }
+    params_marine = {
+        "latitude": SUP_LAT, "longitude": SUP_LON,
+        "daily": "wave_height_max,wave_direction_dominant,wave_period_max",
+        "timezone": "Asia/Vladivostok",
+        "forecast_days": 2,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://api.open-meteo.com/v1/forecast", params=params_weather, timeout=aiohttp.ClientTimeout(total=10)
+        ) as r:
+            w = await r.json()
+        async with session.get(
+            "https://marine-api.open-meteo.com/v1/marine", params=params_marine, timeout=aiohttp.ClientTimeout(total=10)
+        ) as r:
+            m = await r.json()
+    return w["daily"], m["daily"]
 
 
 # ══════════════════════════════════════════════════════
@@ -534,6 +646,52 @@ async def schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
+#  ПОГОДА
+# ══════════════════════════════════════════════════════
+
+async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Загружаю прогноз для острова Русский...")
+
+    try:
+        wd, md = await _fetch_weather()
+    except Exception as e:
+        logger.error(f"Weather error: {e}")
+        await msg.edit_text("⚠️ Не удалось получить данные. Попробуй чуть позже.")
+        return
+
+    lines = ["🌊 *Прогноз для острова Русский*\n" + "━" * 16]
+
+    for i in range(len(wd["time"])):
+        wind      = round(wd["windspeed_10m_max"][i], 1)
+        gusts     = round(wd["windgusts_10m_max"][i], 1)
+        wind_dir  = wd["winddirection_10m_dominant"][i]
+        t_min     = round(wd["temperature_2m_min"][i])
+        t_max     = round(wd["temperature_2m_max"][i])
+        precip    = wd["precipitation_sum"][i] or 0
+        wmo       = wd["weathercode"][i]
+        wave      = round(md["wave_height_max"][i] or 0, 1)
+        wave_per  = round(md["wave_period_max"][i] or 0, 0)
+
+        rain_str  = f"☔ Осадки: {precip} мм" if precip > 0.1 else "☔ Без осадков"
+
+        lines.append(
+            f"\n📅 *{_date_label(wd['time'][i])}* {_wmo_icon(wmo)}\n"
+            f"🌡 {t_min}°...+{t_max}°C\n"
+            f"💨 Ветер: {_deg_to_compass(wind_dir)}, {wind} м/с "
+            f"(порывы {gusts} м/с) {_wind_dot(wind)}\n"
+            f"🌊 Волна: {wave} м, период {int(wave_per)} с {_wave_dot(wave)}\n"
+            f"{rain_str}\n\n"
+            f"*{_verdict(wind, wave)}*\n"
+            f"📍 {_location_advice(wind_dir, wind, wave)}"
+        )
+        if i == 0:
+            lines.append("\n\n" + "━" * 16)
+
+    lines.append("\n\n_Источник: Open-Meteo (погода + морской прогноз)_")
+    await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ══════════════════════════════════════════════════════
 #  ЗАПУСК
 # ══════════════════════════════════════════════════════
 
@@ -582,6 +740,7 @@ def main():
     app.add_handler(announce_conv)
     app.add_handler(review_conv)
     app.add_handler(CommandHandler("schedule", schedule))
+    app.add_handler(CommandHandler("weather", weather))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
 
     logger.info("🏄 САП-бот запущен. Ctrl+C для остановки.")
