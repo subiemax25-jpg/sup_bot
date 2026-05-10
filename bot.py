@@ -30,7 +30,7 @@ CHANNEL_ID = "@super_sup_vl"
 ADMIN_ID   = 32275597
 STORMGLASS_KEY  = "b19dc4ac-4c46-11f1-81a8-0242ac120004-b19dc54c-4c46-11f1-81a8-0242ac120004"   
 OWM_KEY         = "973c9e2cd5ba8533bb501d0ecf2fd070"
-DATABASE_URL   = os.environ.get("DATABASE_URL",   "")
+DATABASE_URL   = os.environ.get("DB_URL", "")
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
