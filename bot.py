@@ -6,8 +6,9 @@
 """
 
 import logging
+import asyncio
 import aiohttp
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     InputMediaPhoto, InputMediaVideo
@@ -19,11 +20,13 @@ from telegram.ext import (
 )
 
 # ─────────────────────────────────────────────
-#  НАСТРОЙКИ  ← заполни эти три строки
+#  НАСТРОЙКИ  ← заполни эти строки
 # ─────────────────────────────────────────────
 BOT_TOKEN  = "8727634438:AAGKhXdxQNUqgMv6EBvVZ1DwVZDSQvzTuAM"
 CHANNEL_ID = "@super_sup_vl"
 ADMIN_ID   = 32275597
+STORMGLASS_KEY  = "b19dc4ac-4c46-11f1-81a8-0242ac120004-b19dc54c-4c46-11f1-81a8-0242ac120004"   
+OWM_KEY         = "973c9e2cd5ba8533bb501d0ecf2fd070"
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -45,6 +48,7 @@ REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
 # ──────────────────────────────────────────────
 SUP_LAT = 42.948
 SUP_LON = 131.941
+VLAD_TZ = timezone(timedelta(hours=10))
 
 MONTHS_RU = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -54,101 +58,229 @@ def _deg_to_compass(deg: float) -> str:
             "Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"]
     return dirs[round(deg / 22.5) % 16]
 
-def _wind_dot(speed: float) -> str:
-    if speed < 4:  return "🟢"
-    if speed < 7:  return "🟡"
-    if speed < 11: return "🟠"
-    return "🔴"
+def _wind_dot(s: float) -> str:
+    return "🟢" if s < 4 else "🟡" if s < 7 else "🟠" if s < 11 else "🔴"
 
-def _wave_dot(height: float) -> str:
-    if height < 0.3: return "🟢"
-    if height < 0.6: return "🟡"
-    if height < 1.0: return "🟠"
-    return "🔴"
+def _wave_dot(h: float) -> str:
+    return "🟢" if h < 0.3 else "🟡" if h < 0.6 else "🟠" if h < 1.0 else "🔴"
 
 def _verdict(wind: float, wave: float) -> str:
-    if wind >= 12 or wave >= 1.0:
-        return "🔴 Выход не рекомендуется"
-    if wind >= 8 or wave >= 0.6:
-        return "🟠 Сложные условия — только опытным"
-    if wind >= 5 or wave >= 0.3:
-        return "🟡 Приемлемо — выбирай укрытое место"
+    if wind >= 12 or wave >= 1.0: return "🔴 Выход не рекомендуется"
+    if wind >= 8  or wave >= 0.6: return "🟠 Сложные условия — только опытным"
+    if wind >= 5  or wave >= 0.3: return "🟡 Приемлемо — выбирай укрытое место"
     return "🟢 Отлично — можно идти везде"
 
 def _location_advice(wind_dir: float, wind: float, wave: float) -> str:
-    """Рекомендация по локации на острове Русский."""
     if wind < 4 and wave < 0.3:
         return "Штиль 🌊 Любая точка острова — иди куда хочешь!"
     if wind >= 12:
-        return "Слишком сильный ветер. Выходить опасно. Если очень нужно — только закрытые бухты: Новик или Аякс."
-
-    # Подветренная сторона по направлению ветра
-    if wind_dir < 22.5 or wind_dir >= 337.5:   # С
-        spot = "бухта Новик (южная сторона острова)"
-    elif wind_dir < 67.5:                        # СВ
-        spot = "западная сторона — Амурский залив"
-    elif wind_dir < 112.5:                       # В
-        spot = "западная сторона — Амурский залив"
-    elif wind_dir < 157.5:                       # ЮВ
-        spot = "бухта Аякс (северная сторона)"
-    elif wind_dir < 202.5:                       # Ю
-        spot = "северный берег острова, ближе к Владивостоку"
-    elif wind_dir < 247.5:                       # ЮЗ
-        spot = "восточная сторона — Уссурийский залив"
-    elif wind_dir < 292.5:                       # З
-        spot = "восточная сторона — Уссурийский залив"
-    else:                                        # СЗ
-        spot = "юго-восточная сторона острова"
-
+        return "Слишком сильный ветер. Только закрытые бухты: Новик или Аякс."
+    if wind_dir < 22.5 or wind_dir >= 337.5: spot = "бухта Новик (южная сторона)"
+    elif wind_dir < 67.5:  spot = "западная сторона — Амурский залив"
+    elif wind_dir < 112.5: spot = "западная сторона — Амурский залив"
+    elif wind_dir < 157.5: spot = "бухта Аякс (северная сторона)"
+    elif wind_dir < 202.5: spot = "северный берег, ближе к Владивостоку"
+    elif wind_dir < 247.5: spot = "восточная сторона — Уссурийский залив"
+    elif wind_dir < 292.5: spot = "восточная сторона — Уссурийский залив"
+    else:                  spot = "юго-восточная сторона острова"
     return f"Лучшее место: {spot} — там будет укрытие от ветра."
 
 def _wmo_icon(code: int) -> str:
-    if code == 0:          return "☀️"
-    if code <= 3:          return "⛅"
-    if code <= 48:         return "🌫"
-    if code <= 67:         return "🌧"
-    if code <= 77:         return "❄️"
-    if code <= 82:         return "🌦"
-    if code <= 86:         return "🌨"
+    if code == 0:  return "☀️"
+    if code <= 3:  return "⛅"
+    if code <= 48: return "🌫"
+    if code <= 67: return "🌧"
+    if code <= 77: return "❄️"
+    if code <= 82: return "🌦"
+    if code <= 86: return "🌨"
     return "⛈"
 
 def _date_label(iso: str) -> str:
     d = date.fromisoformat(iso)
     today = date.today()
-    if d == today:              prefix = "Сегодня"
+    if d == today:                       prefix = "Сегодня"
     elif d == today + timedelta(days=1): prefix = "Завтра"
-    else:                       prefix = ""
+    else:                                prefix = ""
     return f"{prefix}, {d.day} {MONTHS_RU[d.month]}" if prefix else f"{d.day} {MONTHS_RU[d.month]}"
 
-async def _fetch_weather() -> tuple:
-    """Запрашивает прогноз погоды и морских условий с Open-Meteo."""
-    params_weather = {
-        "latitude": SUP_LAT, "longitude": SUP_LON,
-        "daily": ",".join([
-            "weathercode", "temperature_2m_max", "temperature_2m_min",
-            "windspeed_10m_max", "windgusts_10m_max",
-            "winddirection_10m_dominant", "precipitation_sum",
-        ]),
-        "wind_speed_unit": "ms",
-        "timezone": "Asia/Vladivostok",
-        "forecast_days": 2,
-    }
-    params_marine = {
-        "latitude": SUP_LAT, "longitude": SUP_LON,
-        "daily": "wave_height_max,wave_direction_dominant,wave_period_max",
-        "timezone": "Asia/Vladivostok",
-        "forecast_days": 2,
-    }
+def _sg_val(sources: dict) -> float | None:
+    """Извлекает значение из словаря источников Stormglass."""
+    if not sources:
+        return None
+    if "sg" in sources and sources["sg"] is not None:
+        return sources["sg"]
+    vals = [v for v in sources.values() if v is not None]
+    return round(sum(vals) / len(vals), 2) if vals else None
+
+async def _fetch_open_meteo(session: aiohttp.ClientSession) -> dict:
+    """Open-Meteo: ветер, погода, осадки + морские волны."""
+    timeout = aiohttp.ClientTimeout(total=10)
+    w = await (await session.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": SUP_LAT, "longitude": SUP_LON,
+            "daily": "weathercode,temperature_2m_max,temperature_2m_min,"
+                     "windspeed_10m_max,windgusts_10m_max,winddirection_10m_dominant,precipitation_sum",
+            "wind_speed_unit": "ms", "timezone": "Asia/Vladivostok", "forecast_days": 2,
+        }, timeout=timeout
+    )).json()
+    m = await (await session.get(
+        "https://marine-api.open-meteo.com/v1/marine",
+        params={
+            "latitude": SUP_LAT, "longitude": SUP_LON,
+            "daily": "wave_height_max,wave_direction_dominant,wave_period_max",
+            "timezone": "Asia/Vladivostok", "forecast_days": 2,
+        }, timeout=timeout
+    )).json()
+    return {"weather": w["daily"], "marine": m["daily"]}
+
+async def _fetch_stormglass(session: aiohttp.ClientSession, key: str) -> list[dict] | None:
+    """Stormglass: детальные морские данные — волна, свелл, температура воды."""
+    if not key:
+        return None
+    try:
+        now   = datetime.now(VLAD_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = int(now.timestamp())
+        end   = int((now + timedelta(days=2)).timestamp())
+        resp  = await (await session.get(
+            "https://api.stormglass.io/v2/weather/point",
+            params={
+                "lat": SUP_LAT, "lng": SUP_LON, "start": start, "end": end,
+                "params": "waveHeight,wavePeriod,waveDirection,"
+                          "swellHeight,swellPeriod,swellDirection,"
+                          "windSpeed,windDirection,waterTemperature",
+            },
+            headers={"Authorization": key},
+            timeout=aiohttp.ClientTimeout(total=15),
+        )).json()
+
+        # Группируем по дате (Владивосток UTC+10)
+        days: dict[str, dict] = {}
+        for h in resp.get("hours", []):
+            dt    = datetime.fromisoformat(h["time"].replace("Z", "+00:00")).astimezone(VLAD_TZ)
+            day   = dt.strftime("%Y-%m-%d")
+            entry = days.setdefault(day, {
+                "wave_heights": [], "wave_periods": [],
+                "swell_heights": [], "swell_periods": [],
+                "wind_speeds": [], "wind_dirs": [], "water_temps": [],
+            })
+            for field, key_name in [
+                ("waveHeight", "wave_heights"), ("wavePeriod", "wave_periods"),
+                ("swellHeight", "swell_heights"), ("swellPeriod", "swell_periods"),
+                ("windSpeed", "wind_speeds"), ("windDirection", "wind_dirs"),
+                ("waterTemperature", "water_temps"),
+            ]:
+                val = _sg_val(h.get(field, {}))
+                if val is not None:
+                    entry[key_name].append(val)
+
+        result = []
+        for day_iso in sorted(days)[:2]:
+            e = days[day_iso]
+            def mx(lst): return round(max(lst), 1) if lst else None
+            def avg(lst): return round(sum(lst) / len(lst), 1) if lst else None
+            result.append({
+                "date":        day_iso,
+                "wave_height": mx(e["wave_heights"]),
+                "wave_period": avg(e["wave_periods"]),
+                "swell_height": mx(e["swell_heights"]),
+                "swell_period": avg(e["swell_periods"]),
+                "water_temp":  avg(e["water_temps"]),
+                "wind_speed":  mx(e["wind_speeds"]),
+            })
+        return result
+    except Exception as ex:
+        logger.warning(f"Stormglass error: {ex}")
+        return None
+
+async def _fetch_owm(session: aiohttp.ClientSession, key: str) -> list[dict] | None:
+    """OpenWeatherMap: температура, влажность, давление, вероятность дождя."""
+    if not key:
+        return None
+    try:
+        resp = await (await session.get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={"lat": SUP_LAT, "lon": SUP_LON, "appid": key,
+                    "units": "metric", "cnt": 16},
+            timeout=aiohttp.ClientTimeout(total=10),
+        )).json()
+
+        days: dict[str, dict] = {}
+        for item in resp.get("list", []):
+            dt  = datetime.fromtimestamp(item["dt"], tz=VLAD_TZ)
+            day = dt.strftime("%Y-%m-%d")
+            e   = days.setdefault(day, {
+                "temps": [], "humidity": [], "pressure": [], "pop": [], "icons": [],
+            })
+            e["temps"].append(item["main"]["temp"])
+            e["humidity"].append(item["main"]["humidity"])
+            e["pressure"].append(item["main"]["pressure"])
+            e["pop"].append(item.get("pop", 0))
+            e["icons"].append(item["weather"][0]["description"])
+
+        result = []
+        for day_iso in sorted(days)[:2]:
+            e = days[day_iso]
+            result.append({
+                "date":     day_iso,
+                "humidity": round(sum(e["humidity"]) / len(e["humidity"])),
+                "pressure": round(sum(e["pressure"]) / len(e["pressure"])),
+                "rain_prob": round(max(e["pop"]) * 100),
+            })
+        return result
+    except Exception as ex:
+        logger.warning(f"OWM error: {ex}")
+        return None
+
+async def _fetch_all_weather() -> list[dict]:
+    """Собирает данные из всех источников и возвращает прогноз на 2 дня."""
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            "https://api.open-meteo.com/v1/forecast", params=params_weather, timeout=aiohttp.ClientTimeout(total=10)
-        ) as r:
-            w = await r.json()
-        async with session.get(
-            "https://marine-api.open-meteo.com/v1/marine", params=params_marine, timeout=aiohttp.ClientTimeout(total=10)
-        ) as r:
-            m = await r.json()
-    return w["daily"], m["daily"]
+        om_data, sg_data, owm_data = await asyncio.gather(
+            _fetch_open_meteo(session),
+            _fetch_stormglass(session, STORMGLASS_KEY),
+            _fetch_owm(session, OWM_KEY),
+            return_exceptions=True,
+        )
+
+    wd = om_data["weather"] if isinstance(om_data, dict) else {}
+    md = om_data["marine"]  if isinstance(om_data, dict) else {}
+    sg = sg_data  if isinstance(sg_data,  list) else []
+    ow = owm_data if isinstance(owm_data, list) else []
+
+    days = []
+    for i in range(2):
+        sg_day  = sg[i]  if i < len(sg)  else {}
+        ow_day  = ow[i]  if i < len(ow)  else {}
+
+        wave_h  = (sg_day.get("wave_height") or
+                   (round(md["wave_height_max"][i], 1) if md and md.get("wave_height_max") else 0))
+        wave_p  = (sg_day.get("wave_period") or
+                   (round(md["wave_period_max"][i], 0) if md and md.get("wave_period_max") else 0))
+
+        sources = ["Open-Meteo"]
+        if sg_day: sources.append("Stormglass")
+        if ow_day: sources.append("OpenWeatherMap")
+
+        days.append({
+            "date":         wd["time"][i] if wd.get("time") else "",
+            "wmo":          wd["weathercode"][i] if wd.get("weathercode") else 0,
+            "t_min":        round(wd["temperature_2m_min"][i]) if wd.get("temperature_2m_min") else "—",
+            "t_max":        round(wd["temperature_2m_max"][i]) if wd.get("temperature_2m_max") else "—",
+            "wind_speed":   round(wd["windspeed_10m_max"][i], 1) if wd.get("windspeed_10m_max") else 0,
+            "wind_gusts":   round(wd["windgusts_10m_max"][i], 1) if wd.get("windgusts_10m_max") else 0,
+            "wind_dir":     wd["winddirection_10m_dominant"][i] if wd.get("winddirection_10m_dominant") else 0,
+            "precip":       wd["precipitation_sum"][i] or 0 if wd.get("precipitation_sum") else 0,
+            "wave_height":  wave_h,
+            "wave_period":  int(wave_p),
+            "swell_height": sg_day.get("swell_height"),
+            "swell_period": sg_day.get("swell_period"),
+            "water_temp":   sg_day.get("water_temp"),
+            "humidity":     ow_day.get("humidity"),
+            "pressure":     ow_day.get("pressure"),
+            "rain_prob":    ow_day.get("rain_prob"),
+            "sources":      sources,
+        })
+    return days
 
 
 # ══════════════════════════════════════════════════════
@@ -653,7 +785,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Загружаю прогноз для острова Русский...")
 
     try:
-        wd, md = await _fetch_weather()
+        days = await _fetch_all_weather()
     except Exception as e:
         logger.error(f"Weather error: {e}")
         await msg.edit_text("⚠️ Не удалось получить данные. Попробуй чуть позже.")
@@ -661,33 +793,36 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     lines = ["🌊 *Прогноз для острова Русский*\n" + "━" * 16]
 
-    for i in range(len(wd["time"])):
-        wind      = round(wd["windspeed_10m_max"][i], 1)
-        gusts     = round(wd["windgusts_10m_max"][i], 1)
-        wind_dir  = wd["winddirection_10m_dominant"][i]
-        t_min     = round(wd["temperature_2m_min"][i])
-        t_max     = round(wd["temperature_2m_max"][i])
-        precip    = wd["precipitation_sum"][i] or 0
-        wmo       = wd["weathercode"][i]
-        wave      = round(md["wave_height_max"][i] or 0, 1)
-        wave_per  = round(md["wave_period_max"][i] or 0, 0)
+    for i, d in enumerate(days):
+        wind  = d["wind_speed"]
+        wave  = d["wave_height"]
 
-        rain_str  = f"☔ Осадки: {precip} мм" if precip > 0.1 else "☔ Без осадков"
+        # Строки с доп. данными (только если источник их дал)
+        water = f"🌡 Вода: +{d['water_temp']}°C\n" if d.get("water_temp") else ""
+        swell = (f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
+                 if d.get("swell_height") and d.get("swell_period") else "")
+        hum   = f" | 💧 {d['humidity']}%" if d.get("humidity") else ""
+        pres  = f" | 🌬 {d['pressure']} гПа" if d.get("pressure") else ""
+        prob  = f" (вероятность {d['rain_prob']}%)" if d.get("rain_prob") else ""
+        rain  = f"☔ Осадки: {d['precip']} мм{prob}\n" if d["precip"] > 0.1 else f"☔ Без осадков{prob}\n"
 
         lines.append(
-            f"\n📅 *{_date_label(wd['time'][i])}* {_wmo_icon(wmo)}\n"
-            f"🌡 {t_min}°...+{t_max}°C\n"
-            f"💨 Ветер: {_deg_to_compass(wind_dir)}, {wind} м/с "
-            f"(порывы {gusts} м/с) {_wind_dot(wind)}\n"
-            f"🌊 Волна: {wave} м, период {int(wave_per)} с {_wave_dot(wave)}\n"
-            f"{rain_str}\n\n"
+            f"\n📅 *{_date_label(d['date'])}* {_wmo_icon(d['wmo'])}\n"
+            f"🌡 Воздух: +{d['t_min']}°...+{d['t_max']}°C{hum}{pres}\n"
+            f"{water}"
+            f"💨 Ветер: {_deg_to_compass(d['wind_dir'])}, {wind} м/с "
+            f"(порывы {d['wind_gusts']} м/с) {_wind_dot(wind)}\n"
+            f"🌊 Волна: {wave} м, период {d['wave_period']} с {_wave_dot(wave)}\n"
+            f"{swell}"
+            f"{rain}\n"
             f"*{_verdict(wind, wave)}*\n"
-            f"📍 {_location_advice(wind_dir, wind, wave)}"
+            f"📍 {_location_advice(d['wind_dir'], wind, wave)}"
         )
         if i == 0:
             lines.append("\n\n" + "━" * 16)
 
-    lines.append("\n\n_Источник: Open-Meteo (погода + морской прогноз)_")
+    sources_str = " + ".join(days[0]["sources"]) if days else "Open-Meteo"
+    lines.append(f"\n\n_Данные: {sources_str}_")
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
 
