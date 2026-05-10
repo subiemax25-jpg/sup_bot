@@ -823,6 +823,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     sources_str = " + ".join(days[0]["sources"]) if days else "Open-Meteo"
     lines.append(f"\n\n_Данные: {sources_str}_")
+    lines.append("_⚠️ Прогноз приблизительный и может меняться. Проверяйте погоду в разных источниках перед выходом на воду._")
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
 
