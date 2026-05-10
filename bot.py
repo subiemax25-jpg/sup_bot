@@ -313,6 +313,7 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     comment = ctx.user_data.get("review_comment", "")
     author  = ctx.user_data.get("review_author", "")
+    media   = ctx.user_data.get("review_media", [])
 
     if not media:
         await q.edit_message_text(
