@@ -777,6 +777,52 @@ async def schedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+def _sup_recommendations(d: dict) -> str:
+    """Формирует блок рекомендаций для САП-сёрферов на основе прогноза."""
+    wind  = d["wind_speed"]
+    wave  = d["wave_height"]
+    gusts = d["wind_gusts"]
+    wdir  = d["wind_dir"]
+    swell_h = d.get("swell_height") or 0
+    swell_p = d.get("swell_period") or 0
+
+    # Общая оценка
+    verdict = _verdict(wind, wave)
+
+    # Лучшее место
+    location = _location_advice(wdir, wind, wave)
+
+    # Кому подходит
+    if wind < 4 and wave < 0.3:
+        who = "👶 Подходит для всех, включая новичков."
+    elif wind < 7 and wave < 0.5:
+        who = "🏄 Подходит для уверенных пользователей. Новичкам — только с опытным напарником."
+    elif wind < 11 and wave < 0.8:
+        who = "💪 Только для опытных. Новичкам выходить не рекомендуется."
+    else:
+        who = "🚫 Не рекомендуется никому."
+
+    # Предупреждения по конкретным факторам
+    warnings = []
+    if gusts - wind >= 4:
+        warnings.append(f"⚡ Порывы {gusts} м/с — значительно сильнее среднего ветра, будь готов.")
+    if swell_h >= 0.5 and swell_p >= 7:
+        warnings.append(f"〰️ Свелл {swell_h} м с периодом {int(swell_p)} с — волна пологая но мощная, на открытой воде ощутимо качает.")
+    if d.get("rain_prob", 0) >= 50:
+        warnings.append("🌧 Высокая вероятность дождя — возьми гермочехол для телефона.")
+    if d.get("water_temp") and d["water_temp"] < 15:
+        warnings.append(f"🥶 Вода {d['water_temp']}°C — надевай гидрокостюм, без него переохлаждение наступает быстро.")
+
+    warnings_str = "\n".join(warnings) + "\n" if warnings else ""
+
+    return (
+        f"*{verdict}*\n"
+        f"📍 {location}\n"
+        f"{who}\n"
+        f"{warnings_str}"
+    )
+
+
 # ══════════════════════════════════════════════════════
 #  ПОГОДА
 # ══════════════════════════════════════════════════════
@@ -794,17 +840,16 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["🌊 *Прогноз для острова Русский*\n" + "━" * 16]
 
     for i, d in enumerate(days):
-        wind  = d["wind_speed"]
-        wave  = d["wave_height"]
+        wind = d["wind_speed"]
+        wave = d["wave_height"]
 
-        # Строки с доп. данными (только если источник их дал)
         water = f"🌡 Вода: +{d['water_temp']}°C\n" if d.get("water_temp") else ""
         swell = (f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
                  if d.get("swell_height") and d.get("swell_period") else "")
-        hum   = f" | 💧 {d['humidity']}%" if d.get("humidity") else ""
-        pres  = f" | 🌬 {d['pressure']} гПа" if d.get("pressure") else ""
-        prob  = f" (вероятность {d['rain_prob']}%)" if d.get("rain_prob") else ""
-        rain  = f"☔ Осадки: {d['precip']} мм{prob}\n" if d["precip"] > 0.1 else f"☔ Без осадков{prob}\n"
+        hum  = f" | 💧 {d['humidity']}%" if d.get("humidity") else ""
+        pres = f" | 🌬 {d['pressure']} гПа" if d.get("pressure") else ""
+        prob = f" (вероятность {d['rain_prob']}%)" if d.get("rain_prob") else ""
+        rain = f"☔ Осадки: {d['precip']} мм{prob}\n" if d["precip"] > 0.1 else f"☔ Без осадков{prob}\n"
 
         lines.append(
             f"\n📅 *{_date_label(d['date'])}* {_wmo_icon(d['wmo'])}\n"
@@ -815,83 +860,15 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🌊 Волна: {wave} м, период {d['wave_period']} с {_wave_dot(wave)}\n"
             f"{swell}"
             f"{rain}\n"
-            f"*{_verdict(wind, wave)}*\n"
-            f"📍 {_location_advice(d['wind_dir'], wind, wave)}"
+            f"{_sup_recommendations(d)}"
         )
         if i == 0:
             lines.append("\n\n" + "━" * 16)
 
     sources_str = " + ".join(days[0]["sources"]) if days else "Open-Meteo"
     lines.append(f"\n\n_Данные: {sources_str}_")
-    lines.append("_⚠️ Прогноз приблизительный и может меняться. Проверяйте погоду в разных источниках перед выходом на воду._")
+    lines.append("_⚠️ Прогноз приблизительный. Перед выходом проверяйте актуальную погоду._")
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
-
-    # Сохраняем user_id запросившего и уведомляем администратора
-    requester = update.effective_user
-    requester_info = f"@{requester.username}" if requester.username else f"id:{requester.id}"
-    ctx.bot_data["windy_request"] = requester.id
-
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"🗺 *{requester_info}* запросил прогноз погоды.\n\n"
-        f"Открой Windy для острова Русский и пришли сюда скриншот — "
-        f"я перешлю его с пояснением.",
-        parse_mode="Markdown"
-    )
-
-
-# ══════════════════════════════════════════════════════
-#  WINDY — пересылка скриншота с пояснением
-# ══════════════════════════════════════════════════════
-
-WINDY_EXPLANATION = (
-    "🏄‍♂️ *Рекомендации для острова Русский*\n\n"
-    "🟢 *Ветер до 5 м/с, волна до 0.3 м*\n"
-    "Отличные условия. Можно идти в любую точку острова, "
-    "маршруты любой длины, подходит для новичков.\n\n"
-    "🟡 *Ветер 5–8 м/с, волна 0.3–0.6 м*\n"
-    "Выбирай подветренную сторону острова. "
-    "При северном и восточном ветре — Амурский залив или бухта Новик. "
-    "При южном и западном — Уссурийский залив или бухта Аякс. "
-    "Новичкам лучше остаться на берегу.\n\n"
-    "🟠 *Ветер 8–12 м/с, волна 0.6–1.0 м*\n"
-    "Только для опытных. Держись ближе к берегу, "
-    "не уходи на открытую воду. Обязательно с напарником. "
-    "Новичкам — не выходить.\n\n"
-    "🔴 *Ветер выше 12 м/с, волна выше 1.0 м*\n"
-    "Выход не рекомендуется никому. "
-    "Если очень нужно — только закрытые бухты: Новик или Аякс, "
-    "строго вдоль берега.\n\n"
-    "⚠️ *Всегда:* предупреди кого-нибудь о маршруте, "
-    "надевай страховочный лиш, бери с собой воду и телефон в гермочехле."
-)
-
-async def handle_windy_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Когда администратор присылает фото — пересылаем его пользователю с пояснением."""
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    requester_id = ctx.bot_data.get("windy_request")
-    if not requester_id:
-        await update.message.reply_text(
-            "⚠️ Нет активного запроса погоды. "
-            "Скриншот будет переслан как только кто-то запросит /weather."
-        )
-        return
-
-    photo_id = update.message.photo[-1].file_id
-
-    try:
-        await ctx.bot.send_photo(
-            requester_id,
-            photo=photo_id,
-            caption=WINDY_EXPLANATION,
-            parse_mode="Markdown"
-        )
-        ctx.bot_data.pop("windy_request", None)
-        await update.message.reply_text("✅ Скриншот Windy отправлен пользователю!")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Не удалось отправить: {e}")
 
 
 # ══════════════════════════════════════════════════════
@@ -945,9 +922,6 @@ def main():
     app.add_handler(CommandHandler("schedule", schedule))
     app.add_handler(CommandHandler("weather", weather))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
-    app.add_handler(MessageHandler(
-        filters.PHOTO & filters.User(ADMIN_ID), handle_windy_photo
-    ))
 
     logger.info("🏄 САП-бот запущен. Ctrl+C для остановки.")
     app.run_polling(drop_pending_updates=True)
