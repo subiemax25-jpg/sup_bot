@@ -960,10 +960,21 @@ async def year_end_job(context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════
 
 async def post_init(app: Application):
-    if DATABASE_URL:
+    # Читаем URL в момент запуска, а не при импорте модуля
+    url = (os.environ.get("DB_URL") or
+           os.environ.get("DATABASE_URL") or
+           os.environ.get("POSTGRES_URL") or "")
+
+    # Показываем какие переменные окружения связаны с БД
+    db_vars = [k for k in os.environ if any(x in k.upper() for x in ["DB", "DATABASE", "POSTGRES", "PG"])]
+    logger.info(f"🔍 Переменные БД в окружении: {db_vars}")
+    logger.info(f"🔍 URL найден: {bool(url)}, начало: {url[:30] if url else 'ПУСТО'}")
+
+    if url:
+        db.url = url
         await db.connect()
     else:
-        logger.warning("⚠️ DATABASE_URL не задан — база данных отключена!")
+        logger.warning("⚠️ Переменная подключения к БД не найдена — база данных отключена!")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
