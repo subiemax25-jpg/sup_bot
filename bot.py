@@ -960,7 +960,13 @@ async def top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     lines.append(
         "\n_🪸 За отзыв о прогулке — 2 очка_\n"
-        "_🦀 За опубликованный анонс — 1 очко_"
+        "_🦀 За опубликованный анонс — 1 очко_\n\n"
+        "*Звания:*\n"
+        "_🪸 1-2 прогулки — Планктон_\n"
+        "_🦀 3-5 прогулок — Баклан_\n"
+        "_🐙 6-10 прогулок — Ларга_\n"
+        "_🦈 11-20 прогулок — Кракен_\n"
+        "_🔱 21+ прогулок — Посейдон_"
     )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
