@@ -48,7 +48,12 @@ class Database:
         self.pool = None
 
     async def connect(self):
-        self.pool = await asyncpg.create_pool(self.url, min_size=1, max_size=5)
+        self.pool = await asyncpg.create_pool(
+            self.url,
+            min_size=1,
+            max_size=5,
+            server_settings={"application_name": "sup_bot"},
+        )
         await self._init_tables()
         logger.info("✅ База данных подключена")
 
