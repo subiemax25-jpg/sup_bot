@@ -23,7 +23,7 @@ import os
 # ─────────────────────────────────────────────
 #  НАСТРОЙКИ
 # ─────────────────────────────────────────────
-BOT_TOKEN  = "8727634438:AAHDxK8BVht2swQKoD-CErV_56vq5VqR8y0"
+BOT_TOKEN  = "8727634438:AAG2suYveeBC3plu0d1hInuppNZu4K-ikSM"
 CHANNEL_ID = "@super_sup_vl"
 ADMIN_ID   = 32275597
 STORMGLASS_KEY  = "b19dc4ac-4c46-11f1-81a8-0242ac120004-b19dc54c-4c46-11f1-81a8-0242ac120004"   
