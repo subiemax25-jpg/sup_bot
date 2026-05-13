@@ -53,7 +53,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ["🏆 Рейтинг",        "🎰 Колесо фортуны"],
     ],
     resize_keyboard=True,
-    persistent=True,
+    is_persistent=True,
 )
 
 MENU_BUTTONS = {
