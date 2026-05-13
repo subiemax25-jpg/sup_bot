@@ -970,9 +970,17 @@ def main():
     persistence = PicklePersistence(filepath="bot_data.pkl")
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
-    announce_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+    # Все три диалога объединены в один ConversationHandler.
+    # Это позволяет переключаться между /start, /review и /news
+    # в любой момент — текущий незавершённый диалог корректно сбрасывается.
+    conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start",  start),
+            CommandHandler("review", review_start),
+            CommandHandler("news",   news_start),
+        ],
         states={
+            # ── Анонс ──────────────────────────────────────
             DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
             TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_time)],
@@ -985,18 +993,7 @@ def main():
                 MessageHandler(filters.PHOTO, get_announce_photo),
             ],
             CONFIRM: [CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$")],
-        },
-        fallbacks=[
-            CommandHandler("start",  start),
-            CommandHandler("review", review_start),
-            CommandHandler("news",   news_start),
-        ],
-        allow_reentry=True, per_message=False,
-    )
-
-    review_conv = ConversationHandler(
-        entry_points=[CommandHandler("review", review_start)],
-        states={
+            # ── Отзыв ──────────────────────────────────────
             REVIEW_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)],
             REVIEW_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)],
             REVIEW_MEDIA: [
@@ -1004,18 +1001,7 @@ def main():
                 CallbackQueryHandler(review_done, pattern="^review_done$"),
             ],
             REVIEW_CONFIRM: [CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")],
-        },
-        fallbacks=[
-            CommandHandler("review", review_start),
-            CommandHandler("start",  start),
-            CommandHandler("news",   news_start),
-        ],
-        allow_reentry=True, per_message=False,
-    )
-
-    news_conv = ConversationHandler(
-        entry_points=[CommandHandler("news", news_start)],
-        states={
+            # ── Новости ────────────────────────────────────
             NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_text)],
             NEWS_PHOTO: [
                 CallbackQueryHandler(news_photo_choice, pattern="^npho_(yes|no)$"),
@@ -1025,20 +1011,18 @@ def main():
             NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
         },
         fallbacks=[
-            CommandHandler("news",   news_start),
             CommandHandler("start",  start),
             CommandHandler("review", review_start),
+            CommandHandler("news",   news_start),
         ],
         allow_reentry=True, per_message=False,
     )
 
-    app.add_handler(announce_conv)
-    app.add_handler(review_conv)
-    app.add_handler(news_conv)
-    app.add_handler(CommandHandler("schedule", schedule_cmd))
-    app.add_handler(CommandHandler("weather",  weather))
-    app.add_handler(CommandHandler("top",      top))
-    app.add_handler(CommandHandler("rank",     rank))
+    app.add_handler(conv)
+    app.add_handler(CommandHandler("schedule",  schedule_cmd))
+    app.add_handler(CommandHandler("weather",   weather))
+    app.add_handler(CommandHandler("top",       top))
+    app.add_handler(CommandHandler("rank",      rank))
     app.add_handler(CommandHandler("addpoints", addpoints))
     app.add_handler(CommandHandler("backup",    backup))
     app.add_handler(CommandHandler("spin",      spin))
