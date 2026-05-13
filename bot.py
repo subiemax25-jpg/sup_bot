@@ -519,8 +519,8 @@ async def get_news_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _ask_news_photo(message):
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🖼 Прикрепить фото", callback_data="news_add_photo"),
-        InlineKeyboardButton("⏭ Пропустить",       callback_data="news_skip_photo"),
+        InlineKeyboardButton("🖼 Прикрепить фото", callback_data="npho_yes"),
+        InlineKeyboardButton("⏭ Пропустить",       callback_data="npho_no"),
     ]])
     await message.reply_text(
         "🖼 *Добавить фото к новости?*",
@@ -529,10 +529,11 @@ async def _ask_news_photo(message):
 async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data == "news_add_photo":
-        await q.edit_message_text("🖼 Отправь фото:")
+    if q.data == "npho_yes":
+        await q.edit_message_text("🖼 Отправь фото для новости:")
         return NEWS_PHOTO
     ctx.user_data["news_photo"] = None
+    await q.edit_message_text("⏭ Без фото.")
     await _ask_news_author(q.message)
     return NEWS_AUTHOR
 
@@ -1016,7 +1017,7 @@ def main():
         states={
             NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_text)],
             NEWS_PHOTO: [
-                CallbackQueryHandler(news_photo_choice, pattern="^news_(add|skip)_photo$"),
+                CallbackQueryHandler(news_photo_choice, pattern="^npho_(yes|no)$"),
                 MessageHandler(filters.PHOTO, get_news_photo),
             ],
             NEWS_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_author)],
