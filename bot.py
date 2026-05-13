@@ -534,20 +534,13 @@ async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return NEWS_PHOTO
     ctx.user_data["news_photo"] = None
     await q.edit_message_text("⏭ Без фото.")
-    await _ask_news_author(q.message)
+    await ctx.bot.send_message(q.from_user.id, "📌 Кто публикует новость?\nУкажи название организации или @username партнёра.")
     return NEWS_AUTHOR
 
 async def get_news_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["news_photo"] = update.message.photo[-1].file_id
-    await _ask_news_author(update.message)
+    await ctx.bot.send_message(update.effective_user.id, "📌 Кто публикует новость?\nУкажи название организации или @username партнёра.")
     return NEWS_AUTHOR
-
-async def _ask_news_author(message):
-    await message.reply_text(
-        "📌 *Кто публикует новость?*\n"
-        "_Укажи название организации или @username партнёра_\n"
-        "_Пример: Клуб водного туризма «Волна» или @sup\\_partner_",
-        parse_mode="Markdown")
 
 async def get_news_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["news_author"] = update.message.text.strip()
