@@ -1,5 +1,5 @@
 """
-🏄 САП-бот: анонсы + отзывы + погода + расписание + рейтинг
+🏄 САП-бот: анонсы + отзывы + погода + расписание + рейтинг + новости
 ============================================================
 Установка:  pip install "python-telegram-bot[job-queue]" aiohttp
 Запуск:     python3 bot.py
@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
+NEWS_TEXT, NEWS_PHOTO, NEWS_AUTHOR, NEWS_CONFIRM = range(13, 17)
 
 # ──────────────────────────────────────────────
 #  РЕЙТИНГ
@@ -499,6 +500,112 @@ async def _send_media_group(ctx, chat_id, media, caption=""):
 
 
 # ══════════════════════════════════════════════════════
+#  НОВОСТИ / МЕРОПРИЯТИЯ
+# ══════════════════════════════════════════════════════
+
+async def news_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
+    await update.message.reply_text(
+        "📣 *Добавить новость или анонс мероприятия*\n\n"
+        "✍️ *Напиши текст новости:*\n"
+        "_Ссылки в тексте работают — вставляй прямо сюда_",
+        parse_mode="Markdown")
+    return NEWS_TEXT
+
+async def get_news_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["news_text"] = update.message.text.strip()
+    await _ask_news_photo(update.message)
+    return NEWS_PHOTO
+
+async def _ask_news_photo(message):
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🖼 Прикрепить фото", callback_data="news_add_photo"),
+        InlineKeyboardButton("⏭ Пропустить",       callback_data="news_skip_photo"),
+    ]])
+    await message.reply_text(
+        "🖼 *Добавить фото к новости?*",
+        parse_mode="Markdown", reply_markup=keyboard)
+
+async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "news_add_photo":
+        await q.edit_message_text("🖼 Отправь фото:")
+        return NEWS_PHOTO
+    ctx.user_data["news_photo"] = None
+    await _ask_news_author(q.message)
+    return NEWS_AUTHOR
+
+async def get_news_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["news_photo"] = update.message.photo[-1].file_id
+    await _ask_news_author(update.message)
+    return NEWS_AUTHOR
+
+async def _ask_news_author(message):
+    await message.reply_text(
+        "📌 *Кто публикует новость?*\n"
+        "_Укажи название организации или @username партнёра_\n"
+        "_Пример: Клуб водного туризма «Волна» или @sup\\_partner_",
+        parse_mode="Markdown")
+
+async def get_news_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["news_author"] = update.message.text.strip()
+    await _show_news_preview(update.message, ctx)
+    return NEWS_CONFIRM
+
+def _build_news_post(d: dict) -> str:
+    text        = _escape_md(d["news_text"])
+    author_line = f"\n\n📌 *Поделился:* {_escape_md(d['news_author'])}"
+    return (
+        f"📣 *НОВОСТЬ / МЕРОПРИЯТИЕ*\n{'━'*16}\n\n"
+        f"{text}"
+        f"{author_line}\n\n"
+        f"#новости #мероприятия #сап"
+    )
+
+async def _show_news_preview(message, ctx):
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Отправить на проверку", callback_data="news_submit"),
+        InlineKeyboardButton("✏️ Начать заново",         callback_data="news_restart"),
+    ]])
+    await message.reply_text(
+        f"*Вот твоя новость:*\n\n{_build_news_post(ctx.user_data)}",
+        parse_mode="Markdown", reply_markup=keyboard)
+
+async def confirm_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "news_restart":
+        await q.edit_message_text("↩️ Начинаем заново. Напиши /news")
+        return ConversationHandler.END
+
+    author      = q.from_user
+    author_info = f"@{author.username}" if author.username else f"id:{author.id}"
+    post_text   = _build_news_post(ctx.user_data)
+    photo_id    = ctx.user_data.get("news_photo")
+
+    ctx.bot_data.setdefault("pending", {})[f"news_{author.id}"] = {
+        "type": "news", "text": post_text, "photo_id": photo_id,
+        "author_display": ctx.user_data.get("news_author", author_info),
+    }
+
+    mod_keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:news_{author.id}"),
+        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:news_{author.id}"),
+    ]])
+    if photo_id:
+        await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        f"📣 *Новость от* {_escape_md(author_info)}\n{'─'*28}\n\n{post_text}\n\n{'─'*28}\nОпубликовать в канал?",
+        parse_mode="Markdown", reply_markup=mod_keyboard)
+    await q.edit_message_text(
+        "⏳ *Новость отправлена на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
+        parse_mode="Markdown")
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════════
 #  МОДЕРАЦИЯ
 # ══════════════════════════════════════════════════════
 
@@ -529,22 +636,44 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule = ctx.bot_data.setdefault("schedule", [])
                 schedule.append(post_data["schedule_entry"])
                 ctx.bot_data["schedule"] = schedule[-20:]
+
             elif post_data["type"] == "review":
                 caption = (f"🌊 *Впечатления от прогулки*\n\n"
                            f"💬 {_escape_md(post_data['comment'])}\n\n"
                            f"Отзыв оставил: {_escape_md(post_data['author'])}\n\n"
                            f"#сап #отзыв #впечатления")
                 await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
+
+            elif post_data["type"] == "news":
+                text     = post_data["text"]
+                photo_id = post_data["photo_id"]
+                if photo_id:
+                    if len(text) <= 1024:
+                        await ctx.bot.send_photo(CHANNEL_ID, photo=photo_id,
+                                                 caption=text, parse_mode="Markdown")
+                    else:
+                        # Текст длиннее лимита — фото и текст отдельно
+                        await ctx.bot.send_photo(CHANNEL_ID, photo=photo_id)
+                        await ctx.bot.send_message(CHANNEL_ID, text=text, parse_mode="Markdown")
+                else:
+                    await ctx.bot.send_message(CHANNEL_ID, text=text, parse_mode="Markdown")
+
         except Exception as e:
             await q.edit_message_text(f"⚠️ Ошибка при публикации:\n{e}")
             return
 
-        label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
+        label = {"announce": "Анонс", "review": "Отзыв", "news": "Новость"}.get(post_data["type"], "Пост")
         author_display = post_data.get("author_display", f"id:{user_id}")
+
+        # Подсказка по очкам только для анонсов и отзывов
+        points_hint = ""
+        if post_data["type"] == "review":
+            points_hint = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} 2"
+        elif post_data["type"] == "announce":
+            points_hint = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} 1"
+
         await q.edit_message_text(
-            f"✅ {label} опубликован!\n\n"
-            f"👤 Автор: {author_display}\n"
-            f"💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}",
+            f"✅ {label} опубликован!\n\n👤 Автор: {author_display}{points_hint}"
         )
         try:
             await ctx.bot.send_message(user_id, "🎉 *Твой пост одобрен и опубликован в канале!*",
@@ -552,7 +681,7 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
 
     elif action == "reject":
-        label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
+        label = {"announce": "Анонс", "review": "Отзыв", "news": "Новость"}.get(post_data["type"], "Пост")
         await q.edit_message_text(f"❌ {label} отклонён.")
         try:
             await ctx.bot.send_message(user_id,
@@ -882,8 +1011,24 @@ def main():
         allow_reentry=True, per_message=False,
     )
 
+    news_conv = ConversationHandler(
+        entry_points=[CommandHandler("news", news_start)],
+        states={
+            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_text)],
+            NEWS_PHOTO: [
+                CallbackQueryHandler(news_photo_choice, pattern="^news_(add|skip)_photo$"),
+                MessageHandler(filters.PHOTO, get_news_photo),
+            ],
+            NEWS_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_author)],
+            NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
+        },
+        fallbacks=[CommandHandler("news", news_start)],
+        allow_reentry=True, per_message=False,
+    )
+
     app.add_handler(announce_conv)
     app.add_handler(review_conv)
+    app.add_handler(news_conv)
     app.add_handler(CommandHandler("schedule", schedule_cmd))
     app.add_handler(CommandHandler("weather",  weather))
     app.add_handler(CommandHandler("top",      top))
