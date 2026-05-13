@@ -1,5 +1,5 @@
 """
-🏄 САП-бот: анонсы + отзывы + погода + расписание + рейтинг + новости
+🏄 САП-бот: анонсы + отзывы + погода + расписание + рейтинг
 ============================================================
 Установка:  pip install "python-telegram-bot[job-queue]" aiohttp
 Запуск:     python3 bot.py
@@ -11,7 +11,8 @@ import aiohttp
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaPhoto, InputMediaVideo
+    InputMediaPhoto, InputMediaVideo,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove,
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -41,7 +42,28 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
-NEWS_TEXT, NEWS_PHOTO, NEWS_AUTHOR, NEWS_CONFIRM = range(13, 17)
+
+# ──────────────────────────────────────────────
+#  ГЛАВНОЕ МЕНЮ
+# ──────────────────────────────────────────────
+MAIN_MENU = ReplyKeyboardMarkup(
+    [
+        ["🏄 Анонс прогулки", "🌊 Отзыв"],
+        ["📅 Расписание",     "🌤 Погода"],
+        ["🏆 Рейтинг",        "🎰 Колесо фортуны"],
+    ],
+    resize_keyboard=True,
+    persistent=True,
+)
+
+MENU_BUTTONS = {
+    "🏄 Анонс прогулки",
+    "🌊 Отзыв",
+    "📅 Расписание",
+    "🌤 Погода",
+    "🏆 Рейтинг",
+    "🎰 Колесо фортуны",
+}
 
 # ──────────────────────────────────────────────
 #  РЕЙТИНГ
@@ -262,15 +284,48 @@ async def _fetch_all_weather():
 
 
 # ══════════════════════════════════════════════════════
-#  АНОНС
+#  ГЛАВНОЕ МЕНЮ — /start
 # ══════════════════════════════════════════════════════
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Приветствие и показ главного меню."""
+    await update.message.reply_text(
+        "🏄‍♂️ *Привет! Я бот САП-сообщества острова Русский.*\n\n"
+        "Выбери что хочешь сделать 👇",
+        parse_mode="Markdown",
+        reply_markup=MAIN_MENU,
+    )
+
+async def menu_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Маршрутизатор нажатий кнопок главного меню (вне активных диалогов)."""
+    text = update.message.text
+    if text == "🏄 Анонс прогулки":
+        return await announce_start(update, ctx)
+    elif text == "🌊 Отзыв":
+        return await review_start(update, ctx)
+    elif text == "📅 Расписание":
+        return await schedule_cmd(update, ctx)
+    elif text == "🌤 Погода":
+        return await weather(update, ctx)
+    elif text == "🏆 Рейтинг":
+        return await top(update, ctx)
+    elif text == "🎰 Колесо фортуны":
+        return await spin(update, ctx)
+
+
+# ══════════════════════════════════════════════════════
+#  АНОНС
+# ══════════════════════════════════════════════════════
+
+async def announce_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Точка входа в диалог создания анонса."""
     ctx.user_data.clear()
     await update.message.reply_text(
-        "🏄‍♂️ *Привет! Я помогу составить анонс САП-прогулки.*\n\n"
+        "🏄‍♂️ *Создаём анонс прогулки.*\n\n"
         "Отвечай на вопросы — я сформирую пост и отправлю его на проверку.\n\n"
-        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_", parse_mode="Markdown")
+        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_",
+        parse_mode="Markdown",
+    )
     return DATE
 
 async def get_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -285,7 +340,7 @@ async def get_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["time"] = update.message.text.strip()
-    await update.message.reply_text("🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно (Без картинок)_", parse_mode="Markdown")
+    await update.message.reply_text("🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно_", parse_mode="Markdown")
     return ROUTE
 
 async def get_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -364,7 +419,7 @@ async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if q.data == "announce_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Напиши /start")
+        await q.edit_message_text("↩️ Начинаем заново. Нажми *«🏄 Анонс прогулки»* в меню.", parse_mode="Markdown")
         return ConversationHandler.END
 
     d, author = ctx.user_data, q.from_user
@@ -460,7 +515,7 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if q.data == "review_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Напиши /review")
+        await q.edit_message_text("↩️ Начинаем заново. Нажми *«🌊 Отзыв»* в меню.", parse_mode="Markdown")
         return ConversationHandler.END
 
     author      = q.from_user
@@ -500,106 +555,6 @@ async def _send_media_group(ctx, chat_id, media, caption=""):
 
 
 # ══════════════════════════════════════════════════════
-#  НОВОСТИ / МЕРОПРИЯТИЯ
-# ══════════════════════════════════════════════════════
-
-async def news_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data.clear()
-    await update.message.reply_text(
-        "📣 *Добавить новость или анонс мероприятия*\n\n"
-        "✍️ *Напиши текст новости:*\n"
-        "_Ссылки в тексте работают — вставляй прямо сюда_",
-        parse_mode="Markdown")
-    return NEWS_TEXT
-
-async def get_news_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_text"] = update.message.text.strip()
-    await _ask_news_photo(update.message)
-    return NEWS_PHOTO
-
-async def _ask_news_photo(message):
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🖼 Прикрепить фото", callback_data="npho_yes"),
-        InlineKeyboardButton("⏭ Пропустить",       callback_data="npho_no"),
-    ]])
-    await message.reply_text(
-        "🖼 *Добавить фото к новости?*",
-        parse_mode="Markdown", reply_markup=keyboard)
-
-async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "npho_yes":
-        await q.edit_message_text("🖼 Отправь фото для новости:")
-        return NEWS_PHOTO
-    ctx.user_data["news_photo"] = None
-    await q.edit_message_text("⏭ Без фото.")
-    await ctx.bot.send_message(q.from_user.id, "📌 Кто публикует новость?\nУкажи название организации или @username партнёра.")
-    return NEWS_AUTHOR
-
-async def get_news_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_photo"] = update.message.photo[-1].file_id
-    await ctx.bot.send_message(update.effective_user.id, "📌 Кто публикует новость?\nУкажи название организации или @username партнёра.")
-    return NEWS_AUTHOR
-
-async def get_news_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_author"] = update.message.text.strip()
-    await _show_news_preview(update.message, ctx)
-    return NEWS_CONFIRM
-
-def _build_news_post(d: dict) -> str:
-    text        = _escape_md(d["news_text"])
-    author_line = f"\n\n📌 *Поделился:* {_escape_md(d['news_author'])}"
-    return (
-        f"📣 *НОВОСТЬ / МЕРОПРИЯТИЕ*\n{'━'*16}\n\n"
-        f"{text}"
-        f"{author_line}\n\n"
-        f"#новости #мероприятия #сап"
-    )
-
-async def _show_news_preview(message, ctx):
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Отправить на проверку", callback_data="news_submit"),
-        InlineKeyboardButton("✏️ Начать заново",         callback_data="news_restart"),
-    ]])
-    await message.reply_text(
-        f"*Вот твоя новость:*\n\n{_build_news_post(ctx.user_data)}",
-        parse_mode="Markdown", reply_markup=keyboard)
-
-async def confirm_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "news_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Напиши /news")
-        return ConversationHandler.END
-
-    author      = q.from_user
-    author_info = f"@{author.username}" if author.username else f"id:{author.id}"
-    post_text   = _build_news_post(ctx.user_data)
-    photo_id    = ctx.user_data.get("news_photo")
-
-    ctx.bot_data.setdefault("pending", {})[f"news_{author.id}"] = {
-        "type": "news", "text": post_text, "photo_id": photo_id,
-        "author_display": ctx.user_data.get("news_author", author_info),
-    }
-
-    mod_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:news_{author.id}"),
-        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:news_{author.id}"),
-    ]])
-    if photo_id:
-        await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"📣 *Новость от* {_escape_md(author_info)}\n{'─'*28}\n\n{post_text}\n\n{'─'*28}\nОпубликовать в канал?",
-        parse_mode="Markdown", reply_markup=mod_keyboard)
-    await q.edit_message_text(
-        "⏳ *Новость отправлена на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
-        parse_mode="Markdown")
-    return ConversationHandler.END
-
-
-# ══════════════════════════════════════════════════════
 #  МОДЕРАЦИЯ
 # ══════════════════════════════════════════════════════
 
@@ -630,44 +585,22 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule = ctx.bot_data.setdefault("schedule", [])
                 schedule.append(post_data["schedule_entry"])
                 ctx.bot_data["schedule"] = schedule[-20:]
-
             elif post_data["type"] == "review":
                 caption = (f"🌊 *Впечатления от прогулки*\n\n"
                            f"💬 {_escape_md(post_data['comment'])}\n\n"
                            f"Отзыв оставил: {_escape_md(post_data['author'])}\n\n"
                            f"#сап #отзыв #впечатления")
                 await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
-
-            elif post_data["type"] == "news":
-                text     = post_data["text"]
-                photo_id = post_data["photo_id"]
-                if photo_id:
-                    if len(text) <= 1024:
-                        await ctx.bot.send_photo(CHANNEL_ID, photo=photo_id,
-                                                 caption=text, parse_mode="Markdown")
-                    else:
-                        # Текст длиннее лимита — фото и текст отдельно
-                        await ctx.bot.send_photo(CHANNEL_ID, photo=photo_id)
-                        await ctx.bot.send_message(CHANNEL_ID, text=text, parse_mode="Markdown")
-                else:
-                    await ctx.bot.send_message(CHANNEL_ID, text=text, parse_mode="Markdown")
-
         except Exception as e:
             await q.edit_message_text(f"⚠️ Ошибка при публикации:\n{e}")
             return
 
-        label = {"announce": "Анонс", "review": "Отзыв", "news": "Новость"}.get(post_data["type"], "Пост")
+        label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
         author_display = post_data.get("author_display", f"id:{user_id}")
-
-        # Подсказка по очкам только для анонсов и отзывов
-        points_hint = ""
-        if post_data["type"] == "review":
-            points_hint = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} 2"
-        elif post_data["type"] == "announce":
-            points_hint = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} 1"
-
         await q.edit_message_text(
-            f"✅ {label} опубликован!\n\n👤 Автор: {author_display}{points_hint}"
+            f"✅ {label} опубликован!\n\n"
+            f"👤 Автор: {author_display}\n"
+            f"💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}",
         )
         try:
             await ctx.bot.send_message(user_id, "🎉 *Твой пост одобрен и опубликован в канале!*",
@@ -675,11 +608,11 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
 
     elif action == "reject":
-        label = {"announce": "Анонс", "review": "Отзыв", "news": "Новость"}.get(post_data["type"], "Пост")
+        label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
         await q.edit_message_text(f"❌ {label} отклонён.")
         try:
             await ctx.bot.send_message(user_id,
-                "😔 *К сожалению, твой пост отклонён.*\nПопробуй снова: /start или /review",
+                "😔 *К сожалению, твой пост отклонён.*\nПопробуй снова через меню 👇",
                 parse_mode="Markdown")
         except Exception: pass
 
@@ -692,7 +625,7 @@ async def schedule_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entries = ctx.bot_data.get("schedule", [])
     if not entries:
         await update.message.reply_text(
-            "📭 *Ближайших прогулок пока нет.*\n\nСоздай анонс через /start 🏄‍♂️",
+            "📭 *Ближайших прогулок пока нет.*\n\nСоздай анонс через меню 🏄‍♂️",
             parse_mode="Markdown")
         return
     lines = ["🗓 *Ближайшие САП-прогулки:*\n"]
@@ -763,8 +696,8 @@ async def top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{medal} {_get_rank(pts)} @{_escape_md(username)} — {pts} {_pts_word(pts)}")
     lines.append(
         "\n_🪸 За отзыв о прогулке — 2 очка_\n_🦀 За опубликованный анонс — 1 очко_\n\n"
-        "*Звания:*\n_🪸 1\\-2 прогулки — Планктон_\n_🦀 3\\-5 прогулок — Баклан_\n"
-        "_🐙 6\\-10 прогулок — Ларга_\n_🦈 11\\-20 прогулок — Кракен_\n_🔱 21\\+ прогулок — Посейдон_"
+        "*Звания:*\n_🪸 1-2 прогулки — Планктон_\n_🦀 3-5 прогулок — Баклан_\n"
+        "_🐙 6-10 прогулок — Ларга_\n_🦈 11-20 прогулок — Кракен_\n_🔱 21+ прогулок — Посейдон_"
     )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -793,7 +726,6 @@ async def rank(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown")
 
 async def addpoints(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Только для администратора. /addpoints username 5 или /addpoints username -2"""
     if update.effective_user.id != ADMIN_ID:
         return
     args    = ctx.args
@@ -831,7 +763,6 @@ async def addpoints(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown")
 
 async def backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Показывает текущий рейтинг для резервного копирования."""
     if update.effective_user.id != ADMIN_ID:
         return
     ratings = _ratings(ctx.bot_data)
@@ -970,17 +901,13 @@ def main():
     persistence = PicklePersistence(filepath="bot_data.pkl")
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
-    # Все три диалога объединены в один ConversationHandler.
-    # Это позволяет переключаться между /start, /review и /news
-    # в любой момент — текущий незавершённый диалог корректно сбрасывается.
-    conv = ConversationHandler(
+    # Диалог создания анонса
+    announce_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("start",  start),
-            CommandHandler("review", review_start),
-            CommandHandler("news",   news_start),
+            CommandHandler("announce", announce_start),
+            MessageHandler(filters.Regex(r"^🏄 Анонс прогулки$"), announce_start),
         ],
         states={
-            # ── Анонс ──────────────────────────────────────
             DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
             TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_time)],
@@ -993,7 +920,18 @@ def main():
                 MessageHandler(filters.PHOTO, get_announce_photo),
             ],
             CONFIRM: [CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$")],
-            # ── Отзыв ──────────────────────────────────────
+        },
+        fallbacks=[CommandHandler("announce", announce_start)],
+        allow_reentry=True, per_message=False,
+    )
+
+    # Диалог отзыва
+    review_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("review", review_start),
+            MessageHandler(filters.Regex(r"^🌊 Отзыв$"), review_start),
+        ],
+        states={
             REVIEW_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)],
             REVIEW_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)],
             REVIEW_MEDIA: [
@@ -1001,32 +939,32 @@ def main():
                 CallbackQueryHandler(review_done, pattern="^review_done$"),
             ],
             REVIEW_CONFIRM: [CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")],
-            # ── Новости ────────────────────────────────────
-            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_text)],
-            NEWS_PHOTO: [
-                CallbackQueryHandler(news_photo_choice, pattern="^npho_(yes|no)$"),
-                MessageHandler(filters.PHOTO, get_news_photo),
-            ],
-            NEWS_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_author)],
-            NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
         },
-        fallbacks=[
-            CommandHandler("start",  start),
-            CommandHandler("review", review_start),
-            CommandHandler("news",   news_start),
-        ],
+        fallbacks=[CommandHandler("review", review_start)],
         allow_reentry=True, per_message=False,
     )
 
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("schedule",  schedule_cmd))
-    app.add_handler(CommandHandler("weather",   weather))
-    app.add_handler(CommandHandler("top",       top))
-    app.add_handler(CommandHandler("rank",      rank))
+    # Регистрация хендлеров
+    app.add_handler(CommandHandler("start", start))       # приветствие + меню
+    app.add_handler(announce_conv)
+    app.add_handler(review_conv)
+    app.add_handler(CommandHandler("schedule", schedule_cmd))
+    app.add_handler(CommandHandler("weather",  weather))
+    app.add_handler(CommandHandler("top",      top))
+    app.add_handler(CommandHandler("rank",     rank))
     app.add_handler(CommandHandler("addpoints", addpoints))
     app.add_handler(CommandHandler("backup",    backup))
     app.add_handler(CommandHandler("spin",      spin))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
+
+    # Кнопки меню вне диалогов (регистрируем последним — наименьший приоритет)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(
+            r"^(📅 Расписание|🌤 Погода|🏆 Рейтинг|🎰 Колесо фортуны)$"
+        ),
+        menu_router,
+    ))
+
     app.job_queue.run_daily(year_end_job, time=dtime(23, 59, tzinfo=VLAD_TZ))
 
     logger.info("🏄 САП-бот запущен.")
