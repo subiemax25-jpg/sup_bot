@@ -986,7 +986,11 @@ def main():
             ],
             CONFIRM: [CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start",  start),
+            CommandHandler("review", review_start),
+            CommandHandler("news",   news_start),
+        ],
         allow_reentry=True, per_message=False,
     )
 
@@ -1001,7 +1005,11 @@ def main():
             ],
             REVIEW_CONFIRM: [CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("review", review_start)],
+        fallbacks=[
+            CommandHandler("review", review_start),
+            CommandHandler("start",  start),
+            CommandHandler("news",   news_start),
+        ],
         allow_reentry=True, per_message=False,
     )
 
@@ -1016,7 +1024,11 @@ def main():
             NEWS_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_author)],
             NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("news", news_start)],
+        fallbacks=[
+            CommandHandler("news",   news_start),
+            CommandHandler("start",  start),
+            CommandHandler("review", review_start),
+        ],
         allow_reentry=True, per_message=False,
     )
 
