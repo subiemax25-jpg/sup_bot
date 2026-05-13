@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
+NEWS_TEXT, NEWS_PHOTO, NEWS_CONFIRM = range(13, 16)
 
 # ──────────────────────────────────────────────
 #  ГЛАВНОЕ МЕНЮ
@@ -51,6 +52,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ["🏄 Анонс прогулки", "🌊 Отзыв"],
         ["📅 Расписание",     "🌤 Погода"],
         ["🏆 Рейтинг",        "🎰 Колесо фортуны"],
+        ["📰 Добавить новость"],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -290,8 +292,7 @@ async def _fetch_all_weather():
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Приветствие и показ главного меню."""
     await update.message.reply_text(
-        "🏄‍♂️ *Привет! Я бот САП-сообщества острова Русский.*\n\n"
-        "Выбери что хочешь сделать 👇",
+        "🏄‍♂️ *Привет! Я SUPерский Бот!*\n\nВыбери, что хочешь сделать 👇",
         parse_mode="Markdown",
         reply_markup=MAIN_MENU,
     )
@@ -311,6 +312,8 @@ async def menu_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await top(update, ctx)
     elif text == "🎰 Колесо фортуны":
         return await spin(update, ctx)
+    elif text == "📰 Добавить новость":
+        return await news_start(update, ctx)
 
 
 # ══════════════════════════════════════════════════════
@@ -595,12 +598,22 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"⚠️ Ошибка при публикации:\n{e}")
             return
 
-        label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
+        if post_data["type"] == "news":
+            news_text = _escape_md(post_data.get("text", ""))
+            news_cap  = f"📰 *Новость*\n\n{news_text}\n\n#сап #новости"
+            if post_data.get("photo_id"):
+                await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
+                                         caption=news_cap, parse_mode="Markdown")
+            else:
+                await ctx.bot.send_message(CHANNEL_ID, text=news_cap, parse_mode="Markdown")
+        label = "Анонс" if post_data["type"] == "announce" else ("Отзыв" if post_data["type"] == "review" else "Новость")
         author_display = post_data.get("author_display", f"id:{user_id}")
+        pts_hint = ""
+        if post_data["type"] in ("announce", "review"):
+            pts_hint = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}"
         await q.edit_message_text(
             f"✅ {label} опубликован!\n\n"
-            f"👤 Автор: {author_display}\n"
-            f"💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}",
+            f"👤 Автор: {author_display}{pts_hint}",
         )
         try:
             await ctx.bot.send_message(user_id, "🎉 *Твой пост одобрен и опубликован в канале!*",
@@ -893,6 +906,95 @@ async def spin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+# ══════════════════════════════════════════════════════
+#  НОВОСТЬ
+# ══════════════════════════════════════════════════════
+
+async def news_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
+    await update.message.reply_text(
+        "📰 *Добавить новость*\n\n"
+        "✍️ Напиши текст новости — я отправлю её на проверку администратору.",
+        parse_mode="Markdown",
+    )
+    return NEWS_TEXT
+
+async def get_news_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["news_text"] = update.message.text.strip()
+    keyboard = [
+        [InlineKeyboardButton("📷 Прикрепить фото", callback_data="news_add_photo")],
+        [InlineKeyboardButton("⏭ Пропустить",        callback_data="news_skip_photo")],
+    ]
+    await update.message.reply_text(
+        "🖼 Хочешь добавить фото к новости?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return NEWS_PHOTO
+
+async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "news_add_photo":
+        await q.edit_message_text("📷 Отправь фото для новости:")
+        return NEWS_PHOTO
+    ctx.user_data["news_photo_id"] = None
+    await _show_news_preview(q.message, ctx)
+    return NEWS_CONFIRM
+
+async def get_news_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["news_photo_id"] = update.message.photo[-1].file_id
+    await _show_news_preview(update.message, ctx)
+    return NEWS_CONFIRM
+
+async def _show_news_preview(message, ctx):
+    text     = ctx.user_data.get("news_text", "")
+    photo_id = ctx.user_data.get("news_photo_id")
+    preview  = (
+        f"*Предпросмотр новости:*\n\n"
+        f"📰 {_escape_md(text)}\n\n"
+        f"{'📎 Фото прикреплено' if photo_id else '🚫 Без фото'}"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Отправить на проверку", callback_data="news_submit"),
+        InlineKeyboardButton("✏️ Начать заново",         callback_data="news_restart"),
+    ]])
+    await message.reply_text(preview, parse_mode="Markdown", reply_markup=keyboard)
+
+async def confirm_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "news_restart":
+        await q.edit_message_text("↩️ Начинаем заново. Нажми *«📰 Добавить новость»* в меню.", parse_mode="Markdown")
+        return ConversationHandler.END
+
+    author      = q.from_user
+    author_info = f"@{author.username}" if author.username else f"id:{author.id}"
+    text        = ctx.user_data.get("news_text", "")
+    photo_id    = ctx.user_data.get("news_photo_id")
+
+    ctx.bot_data.setdefault("pending", {})[f"news_{author.id}"] = {
+        "type": "news", "text": text, "photo_id": photo_id,
+        "author_display": author_info,
+    }
+
+    mod_keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:news_{author.id}"),
+        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:news_{author.id}"),
+    ]])
+    if photo_id:
+        await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        f"📰 *Новость от* {_escape_md(author_info)}\n{'─'*28}\n\n{_escape_md(text)}\n\n{'─'*28}\nОпубликовать в канал?",
+        parse_mode="Markdown", reply_markup=mod_keyboard,
+    )
+    await q.edit_message_text(
+        "⏳ *Новость отправлена на проверку.*\nКак только одобрят — появится в канале. Спасибо! 🙌",
+        parse_mode="Markdown",
+    )
+    return ConversationHandler.END
+
 # ══════════════════════════════════════════════════════
 #  ЗАПУСК
 # ══════════════════════════════════════════════════════
@@ -944,10 +1046,29 @@ def main():
         allow_reentry=True, per_message=False,
     )
 
+    # Диалог новости
+    news_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("news", news_start),
+            MessageHandler(filters.Regex(r"^📰 Добавить новость$"), news_start),
+        ],
+        states={
+            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_text)],
+            NEWS_PHOTO: [
+                CallbackQueryHandler(news_photo_choice, pattern="^news_(add_photo|skip_photo)$"),
+                MessageHandler(filters.PHOTO, get_news_photo),
+            ],
+            NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
+        },
+        fallbacks=[CommandHandler("news", news_start)],
+        allow_reentry=True, per_message=False,
+    )
+
     # Регистрация хендлеров
     app.add_handler(CommandHandler("start", start))       # приветствие + меню
     app.add_handler(announce_conv)
     app.add_handler(review_conv)
+    app.add_handler(news_conv)
     app.add_handler(CommandHandler("schedule", schedule_cmd))
     app.add_handler(CommandHandler("weather",  weather))
     app.add_handler(CommandHandler("top",      top))
