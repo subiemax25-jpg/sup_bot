@@ -1,6 +1,10 @@
 """
 🏄 САП-бот: анонсы + отзывы + погода + расписание + рейтинг
 ============================================================
+Погода:
+  - Open-Meteo  — ветер, температура, осадки (бесплатно, без ключа)
+  - WorldWeatherOnline Marine — волны, свелл, температура воды (бесплатно, 500 req/day)
+
 Установка:  pip install "python-telegram-bot[job-queue]" aiohttp
 Запуск:     python3 bot.py
 """
@@ -11,8 +15,7 @@ import aiohttp
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaPhoto, InputMediaVideo,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InputMediaPhoto, InputMediaVideo
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -24,11 +27,10 @@ import os
 # ─────────────────────────────────────────────
 #  НАСТРОЙКИ
 # ─────────────────────────────────────────────
-BOT_TOKEN  = "8727634438:AAG2suYveeBC3plu0d1hInuppNZu4K-ikSM"
-CHANNEL_ID = "@super_sup_vl"
-ADMIN_ID   = 32275597
-STORMGLASS_KEY  = "b19dc4ac-4c46-11f1-81a8-0242ac120004-b19dc54c-4c46-11f1-81a8-0242ac120004"   
-OWM_KEY         = "973c9e2cd5ba8533bb501d0ecf2fd070"
+BOT_TOKEN  = os.environ.get("BOT_TOKEN",  "ВАШ_ТОКЕН_ОТ_BOTFATHER")
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@ваш_канал")
+ADMIN_ID   = int(os.environ.get("ADMIN_ID", "123456789"))
+WWO_KEY    = os.environ.get("WWO_KEY", "")eq/day)
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -42,30 +44,6 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
-NEWS_TEXT, NEWS_PHOTO, NEWS_CONFIRM = range(13, 16)
-
-# ──────────────────────────────────────────────
-#  ГЛАВНОЕ МЕНЮ
-# ──────────────────────────────────────────────
-MAIN_MENU = ReplyKeyboardMarkup(
-    [
-        ["🏄 Анонс прогулки", "🌊 Отзыв"],
-        ["📅 Расписание",     "🌤 Погода"],
-        ["🏆 Рейтинг",        "🎰 Колесо фортуны"],
-        ["📰 Добавить новость"],
-    ],
-    resize_keyboard=True,
-    is_persistent=True,
-)
-
-MENU_BUTTONS = {
-    "🏄 Анонс прогулки",
-    "🌊 Отзыв",
-    "📅 Расписание",
-    "🌤 Погода",
-    "🏆 Рейтинг",
-    "🎰 Колесо фортуны",
-}
 
 # ──────────────────────────────────────────────
 #  РЕЙТИНГ
@@ -102,11 +80,11 @@ def _ratings(bot_data: dict) -> dict:
 
 
 # ──────────────────────────────────────────────
-#  ПОГОДА
+#  ПОГОДА — константы и вспомогательные функции
 # ──────────────────────────────────────────────
-SUP_LAT  = 42.948
-SUP_LON  = 131.941
-VLAD_TZ  = timezone(timedelta(hours=10))
+SUP_LAT = 42.948
+SUP_LON = 131.941
+VLAD_TZ = timezone(timedelta(hours=10))
 
 MONTHS_RU = ["","января","февраля","марта","апреля","мая","июня",
               "июля","августа","сентября","октября","ноября","декабря"]
@@ -116,29 +94,7 @@ def _deg_to_compass(deg: float) -> str:
             "Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"]
     return dirs[round(deg / 22.5) % 16]
 
-def _wind_dot(s): return "🟢" if s < 4 else "🟡" if s < 7 else "🟠" if s < 11 else "🔴"
-def _wave_dot(h): return "🟢" if h < 0.3 else "🟡" if h < 0.6 else "🟠" if h < 1.0 else "🔴"
-
-def _verdict(wind, wave):
-    if wind >= 12 or wave >= 1.0: return "🔴 Выход не рекомендуется"
-    if wind >= 8  or wave >= 0.6: return "🟠 Сложные условия — только опытным"
-    if wind >= 5  or wave >= 0.3: return "🟡 Приемлемо — выбирай укрытое место"
-    return "🟢 Отлично — можно идти везде"
-
-def _location_advice(wind_dir, wind, wave):
-    if wind < 4 and wave < 0.3: return "Штиль 🌊 Любая точка острова — иди куда хочешь!"
-    if wind >= 12: return "Слишком сильный ветер. Только закрытые бухты: Новик или Аякс."
-    if   wind_dir < 22.5 or wind_dir >= 337.5: spot = "бухта Новик (южная сторона)"
-    elif wind_dir < 67.5:                       spot = "западная сторона — Амурский залив"
-    elif wind_dir < 112.5:                      spot = "западная сторона — Амурский залив"
-    elif wind_dir < 157.5:                      spot = "бухта Аякс (северная сторона)"
-    elif wind_dir < 202.5:                      spot = "северный берег, ближе к Владивостоку"
-    elif wind_dir < 247.5:                      spot = "восточная сторона — Уссурийский залив"
-    elif wind_dir < 292.5:                      spot = "восточная сторона — Уссурийский залив"
-    else:                                        spot = "юго-восточная сторона острова"
-    return f"Лучшее место: {spot} — там будет укрытие от ветра."
-
-def _wmo_icon(code):
+def _wmo_icon(code: int) -> str:
     if code == 0:  return "☀️"
     if code <= 3:  return "⛅"
     if code <= 48: return "🌫"
@@ -148,187 +104,246 @@ def _wmo_icon(code):
     if code <= 86: return "🌨"
     return "⛈"
 
-def _date_label(iso):
-    d = date.fromisoformat(iso)
+def _wind_dot(s):  return "🟢" if s < 4 else "🟡" if s < 7 else "🟠" if s < 11 else "🔴"
+def _wave_dot(h):  return "🟢" if h < 0.3 else "🟡" if h < 0.6 else "🟠" if h < 1.0 else "🔴"
+
+def _verdict(wind, wave):
+    if wind >= 12 or wave >= 1.0: return "🔴 Выход не рекомендуется"
+    if wind >= 8  or wave >= 0.6: return "🟠 Сложные условия — только опытным"
+    if wind >= 5  or wave >= 0.3: return "🟡 Приемлемо — выбирай укрытое место"
+    return "🟢 Отлично — можно идти везде"
+
+def _location_advice(wind_dir_deg, wind, wave):
+    if wind < 4 and wave < 0.3:
+        return "Штиль 🌊 Любая точка острова — иди куда хочешь!"
+    if wind >= 12:
+        return "Слишком сильный ветер. Только закрытые бухты: Новик или Аякс."
+    d = wind_dir_deg
+    if   d < 22.5 or d >= 337.5: spot = "бухта Новик (южная сторона)"
+    elif d < 67.5:                spot = "западная сторона — Амурский залив"
+    elif d < 112.5:               spot = "западная сторона — Амурский залив"
+    elif d < 157.5:               spot = "бухта Аякс (северная сторона)"
+    elif d < 202.5:               spot = "северный берег, ближе к Владивостоку"
+    elif d < 247.5:               spot = "восточная сторона — Уссурийский залив"
+    elif d < 292.5:               spot = "восточная сторона — Уссурийский залив"
+    else:                         spot = "юго-восточная сторона острова"
+    return f"Лучшее место: {spot} — там будет укрытие от ветра."
+
+def _date_label(iso: str) -> str:
+    try:
+        d = date.fromisoformat(iso)
+    except Exception:
+        return iso
     today = date.today()
-    if d == today:                       prefix = "Сегодня"
-    elif d == today + timedelta(days=1): prefix = "Завтра"
-    else:                                prefix = ""
+    if d == today:
+        prefix = "Сегодня"
+    elif d == today + timedelta(days=1):
+        prefix = "Завтра"
+    else:
+        prefix = ""
     return f"{prefix}, {d.day} {MONTHS_RU[d.month]}" if prefix else f"{d.day} {MONTHS_RU[d.month]}"
 
-def _sg_val(sources):
-    if not sources: return None
-    if "sg" in sources and sources["sg"] is not None: return sources["sg"]
-    vals = [v for v in sources.values() if v is not None]
-    return round(sum(vals)/len(vals), 2) if vals else None
-
-def _sup_recommendations(d):
-    wind, wave, gusts = d["wind_speed"], d["wave_height"], d["wind_gusts"]
+def _sup_recommendations(d: dict) -> str:
+    wind    = d.get("wind_speed", 0)
+    wave    = d.get("wave_height", 0)
+    gusts   = d.get("wind_gusts", 0)
     swell_h = d.get("swell_height") or 0
     swell_p = d.get("swell_period") or 0
-    if wind < 4 and wave < 0.3:   who = "👶 Подходит для всех, включая новичков."
-    elif wind < 7 and wave < 0.5: who = "🏄 Подходит для уверенных пользователей. Новичкам — только с опытным напарником."
-    elif wind < 11 and wave < 0.8:who = "💪 Только для опытных. Новичкам выходить не рекомендуется."
-    else:                          who = "🚫 Не рекомендуется никому."
+
+    if wind < 4 and wave < 0.3:
+        who = "👶 Подходит для всех, включая новичков."
+    elif wind < 7 and wave < 0.5:
+        who = "🏄 Подходит для уверенных пользователей. Новичкам — только с опытным напарником."
+    elif wind < 11 and wave < 0.8:
+        who = "💪 Только для опытных. Новичкам выходить не рекомендуется."
+    else:
+        who = "🚫 Не рекомендуется никому."
+
     warnings = []
-    if gusts - wind >= 4: warnings.append(f"⚡ Порывы {gusts} м/с — значительно сильнее среднего ветра.")
-    if swell_h >= 0.5 and swell_p >= 7: warnings.append(f"〰️ Свелл {swell_h} м, период {int(swell_p)} с — на открытой воде качает.")
-    if d.get("rain_prob", 0) >= 50: warnings.append("🌧 Высокая вероятность дождя — возьми гермочехол.")
-    if d.get("water_temp") and d["water_temp"] < 15: warnings.append(f"🥶 Вода {d['water_temp']}°C — надевай гидрокостюм.")
+    if gusts > 0 and gusts - wind >= 4:
+        warnings.append(f"⚡ Порывы {gusts} м/с — значительно сильнее среднего ветра.")
+    if swell_h >= 0.5 and swell_p >= 7:
+        warnings.append(f"〰️ Свелл {swell_h} м, период {int(swell_p)} с — на открытой воде качает.")
+    if d.get("prec_prob", 0) >= 50:
+        warnings.append("🌧 Высокая вероятность дождя — возьми гермочехол.")
+    if d.get("water_temp") and d["water_temp"] < 15:
+        warnings.append(f"🥶 Вода {d['water_temp']}°C — надевай гидрокостюм.")
+
     warnings_str = "\n".join(warnings) + "\n" if warnings else ""
-    return f"*{_verdict(wind, wave)}*\n📍 {_location_advice(d['wind_dir'], wind, wave)}\n{who}\n{warnings_str}"
-
-async def _fetch_open_meteo(session):
-    t = aiohttp.ClientTimeout(total=10)
-    w = await (await session.get("https://api.open-meteo.com/v1/forecast", timeout=t, params={
-        "latitude": SUP_LAT, "longitude": SUP_LON, "wind_speed_unit": "ms",
-        "timezone": "Asia/Vladivostok", "forecast_days": 2,
-        "daily": "weathercode,temperature_2m_max,temperature_2m_min,windspeed_10m_max,windgusts_10m_max,winddirection_10m_dominant,precipitation_sum",
-    })).json()
-    m = await (await session.get("https://marine-api.open-meteo.com/v1/marine", timeout=t, params={
-        "latitude": SUP_LAT, "longitude": SUP_LON,
-        "timezone": "Asia/Vladivostok", "forecast_days": 2,
-        "daily": "wave_height_max,wave_direction_dominant,wave_period_max",
-    })).json()
-    return {"weather": w["daily"], "marine": m["daily"]}
-
-async def _fetch_stormglass(session, key):
-    if not key: return None
-    try:
-        now = datetime.now(VLAD_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        resp = await (await session.get(
-            "https://api.stormglass.io/v2/weather/point",
-            headers={"Authorization": key},
-            timeout=aiohttp.ClientTimeout(total=15),
-            params={"lat": SUP_LAT, "lng": SUP_LON,
-                    "start": int(now.timestamp()), "end": int((now+timedelta(days=2)).timestamp()),
-                    "params": "waveHeight,wavePeriod,swellHeight,swellPeriod,windSpeed,waterTemperature"},
-        )).json()
-        days = {}
-        for h in resp.get("hours", []):
-            dt = datetime.fromisoformat(h["time"].replace("Z","+00:00")).astimezone(VLAD_TZ)
-            e  = days.setdefault(dt.strftime("%Y-%m-%d"), {k:[] for k in ["wh","wp","sh","sp","wt"]})
-            for f,k in [("waveHeight","wh"),("wavePeriod","wp"),("swellHeight","sh"),("swellPeriod","sp"),("waterTemperature","wt")]:
-                v = _sg_val(h.get(f,{}))
-                if v is not None: e[k].append(v)
-        result = []
-        for d in sorted(days)[:2]:
-            e = days[d]
-            mx  = lambda l: round(max(l),1) if l else None
-            avg = lambda l: round(sum(l)/len(l),1) if l else None
-            result.append({"wave_height": mx(e["wh"]), "wave_period": avg(e["wp"]),
-                           "swell_height": mx(e["sh"]), "swell_period": avg(e["sp"]),
-                           "water_temp": avg(e["wt"])})
-        return result
-    except Exception as ex:
-        logger.warning(f"Stormglass: {ex}"); return None
-
-async def _fetch_owm(session, key):
-    if not key: return None
-    try:
-        resp = await (await session.get(
-            "https://api.openweathermap.org/data/2.5/forecast",
-            timeout=aiohttp.ClientTimeout(total=10),
-            params={"lat": SUP_LAT, "lon": SUP_LON, "appid": key, "units": "metric", "cnt": 16},
-        )).json()
-        days = {}
-        for item in resp.get("list", []):
-            dt = datetime.fromtimestamp(item["dt"], tz=VLAD_TZ)
-            e  = days.setdefault(dt.strftime("%Y-%m-%d"), {"h":[],"p":[],"pop":[]})
-            e["h"].append(item["main"]["humidity"])
-            e["p"].append(item["main"]["pressure"])
-            e["pop"].append(item.get("pop",0))
-        result = []
-        for d in sorted(days)[:2]:
-            e = days[d]
-            result.append({"humidity": round(sum(e["h"])/len(e["h"])),
-                           "pressure": round(sum(e["p"])/len(e["p"])),
-                           "rain_prob": round(max(e["pop"])*100)})
-        return result
-    except Exception as ex:
-        logger.warning(f"OWM: {ex}"); return None
-
-async def _fetch_all_weather():
-    async with aiohttp.ClientSession() as session:
-        om, sg, ow = await asyncio.gather(
-            _fetch_open_meteo(session),
-            _fetch_stormglass(session, STORMGLASS_KEY),
-            _fetch_owm(session, OWM_KEY),
-            return_exceptions=True,
-        )
-    wd = om["weather"] if isinstance(om,dict) else {}
-    md = om["marine"]  if isinstance(om,dict) else {}
-    sg = sg if isinstance(sg,list) else []
-    ow = ow if isinstance(ow,list) else []
-    days = []
-    for i in range(2):
-        s = sg[i] if i < len(sg) else {}
-        o = ow[i] if i < len(ow) else {}
-        wave_h = s.get("wave_height") or (round(md["wave_height_max"][i],1) if md and md.get("wave_height_max") else 0)
-        wave_p = s.get("wave_period") or (round(md["wave_period_max"][i],0) if md and md.get("wave_period_max") else 0)
-        src = ["Open-Meteo"] + (["Stormglass"] if s else []) + (["OpenWeatherMap"] if o else [])
-        days.append({
-            "date":        wd["time"][i] if wd.get("time") else "",
-            "wmo":         wd.get("weathercode",[0])[i],
-            "t_min":       round(wd["temperature_2m_min"][i]) if wd.get("temperature_2m_min") else "—",
-            "t_max":       round(wd["temperature_2m_max"][i]) if wd.get("temperature_2m_max") else "—",
-            "wind_speed":  round(wd["windspeed_10m_max"][i],1) if wd.get("windspeed_10m_max") else 0,
-            "wind_gusts":  round(wd["windgusts_10m_max"][i],1) if wd.get("windgusts_10m_max") else 0,
-            "wind_dir":    wd.get("winddirection_10m_dominant",[0])[i],
-            "precip":      (wd["precipitation_sum"][i] or 0) if wd.get("precipitation_sum") else 0,
-            "wave_height": wave_h, "wave_period": int(wave_p),
-            "swell_height": s.get("swell_height"), "swell_period": s.get("swell_period"),
-            "water_temp":  s.get("water_temp"),
-            "humidity":    o.get("humidity"), "pressure": o.get("pressure"), "rain_prob": o.get("rain_prob"),
-            "sources":     src,
-        })
-    return days
-
-
-# ══════════════════════════════════════════════════════
-#  ГЛАВНОЕ МЕНЮ — /start
-# ══════════════════════════════════════════════════════
-
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Приветствие и показ главного меню."""
-    await update.message.reply_text(
-        "🏄‍♂️ *Привет! Я SUPерский Бот!*\n\nВыбери, что хочешь сделать 👇",
-        parse_mode="Markdown",
-        reply_markup=MAIN_MENU,
+    return (
+        f"*{_verdict(wind, wave)}*\n"
+        f"📍 {_location_advice(d.get('wind_dir', 0), wind, wave)}\n"
+        f"{who}\n{warnings_str}"
     )
 
-async def menu_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Маршрутизатор нажатий кнопок главного меню (вне активных диалогов)."""
-    text = update.message.text
-    if text == "🏄 Анонс прогулки":
-        return await announce_start(update, ctx)
-    elif text == "🌊 Отзыв":
-        return await review_start(update, ctx)
-    elif text == "📅 Расписание":
-        return await schedule_cmd(update, ctx)
-    elif text == "🌤 Погода":
-        return await weather(update, ctx)
-    elif text == "🏆 Рейтинг":
-        return await top(update, ctx)
-    elif text == "🎰 Колесо фортуны":
-        return await spin(update, ctx)
-    elif text == "📰 Добавить новость":
-        return await news_start(update, ctx)
+
+# ──────────────────────────────────────────────
+#  ПОГОДА — получение данных
+# ──────────────────────────────────────────────
+
+async def _fetch_open_meteo(session: aiohttp.ClientSession):
+    """
+    Open-Meteo — ветер, температура, осадки.
+    Полностью бесплатно, без ключа, без регистрации.
+    """
+    try:
+        resp = await session.get(
+            "https://api.open-meteo.com/v1/forecast",
+            timeout=aiohttp.ClientTimeout(total=10),
+            params={
+                "latitude":        SUP_LAT,
+                "longitude":       SUP_LON,
+                "wind_speed_unit": "ms",
+                "timezone":        "Asia/Vladivostok",
+                "forecast_days":   2,
+                "daily": ",".join([
+                    "weathercode",
+                    "temperature_2m_max",
+                    "temperature_2m_min",
+                    "windspeed_10m_max",
+                    "windgusts_10m_max",
+                    "winddirection_10m_dominant",
+                    "precipitation_sum",
+                    "precipitation_probability_max",
+                ]),
+            }
+        )
+        data = await resp.json()
+        d = data["daily"]
+        result = []
+        for i in range(2):
+            result.append({
+                "date":         d["time"][i],
+                "icon":         _wmo_icon(d["weathercode"][i]),
+                "t_min":        round(d["temperature_2m_min"][i]),
+                "t_max":        round(d["temperature_2m_max"][i]),
+                "wind_speed":   round(d["windspeed_10m_max"][i], 1),
+                "wind_gusts":   round(d["windgusts_10m_max"][i], 1),
+                "wind_dir":     d["winddirection_10m_dominant"][i],
+                "wind_dir_str": _deg_to_compass(d["winddirection_10m_dominant"][i]),
+                "precip":       round(d["precipitation_sum"][i] or 0, 1),
+                "prec_prob":    int(d.get("precipitation_probability_max", [0, 0])[i] or 0),
+            })
+        return result
+    except Exception as ex:
+        logger.warning(f"Open-Meteo: {ex}")
+        return None
+
+
+async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
+    """
+    WorldWeatherOnline Marine API — волны, свелл, температура воды.
+    Бесплатный план: 500 запросов/день, без карты.
+    Зарегистрируйся на worldweatheronline.com → добавь WWO_KEY в Railway Variables.
+    """
+    if not key:
+        return None
+    try:
+        resp = await session.get(
+            "https://api.worldweatheronline.com/premium/v1/marine.ashx",
+            timeout=aiohttp.ClientTimeout(total=15),
+            params={
+                "key":         key,
+                "q":           f"{SUP_LAT},{SUP_LON}",
+                "format":      "json",
+                "num_of_days": 2,
+                "tp":          3,  # 3-часовые интервалы, берём максимум за день
+            }
+        )
+        data = await resp.json()
+
+        err = data.get("data", {}).get("error")
+        if err:
+            logger.warning(f"WWO Marine error: {err}")
+            return None
+
+        days_raw = data.get("data", {}).get("weather", [])
+        result = []
+        for day in days_raw[:2]:
+            hourly = day.get("hourly", [])
+            if not hourly:
+                result.append({})
+                continue
+
+            def _f(h, k, default=0.0):
+                try: return float(h.get(k, default) or default)
+                except: return default
+
+            wave_h  = [_f(h, "sigHeight_m")      for h in hourly]
+            swell_h = [_f(h, "swellHeight_m")    for h in hourly]
+            swell_p = [_f(h, "swellPeriod_secs") for h in hourly]
+            water_t = [_f(h, "waterTemp_C")      for h in hourly]
+
+            max_idx = wave_h.index(max(wave_h)) if wave_h else 0
+
+            result.append({
+                "wave_height":  round(max(wave_h),  1) if wave_h else 0,
+                "swell_height": round(max(swell_h), 1) if swell_h else None,
+                "swell_period": round(swell_p[max_idx]) if swell_p else None,
+                "water_temp":   round(sum(water_t) / len(water_t), 1) if water_t else None,
+            })
+        return result if result else None
+    except Exception as ex:
+        logger.warning(f"WWO Marine: {ex}")
+        return None
+
+
+async def _fetch_all_weather() -> list:
+    async with aiohttp.ClientSession() as session:
+        om, wwo = await asyncio.gather(
+            _fetch_open_meteo(session),
+            _fetch_wwo_marine(session, WWO_KEY),
+            return_exceptions=True,
+        )
+
+    om  = om  if isinstance(om,  list) else []
+    wwo = wwo if isinstance(wwo, list) else []
+
+    today = date.today()
+    fallback_dates = [today.isoformat(), (today + timedelta(days=1)).isoformat()]
+
+    days = []
+    for i in range(2):
+        o = om[i]  if i < len(om)  else {}
+        w = wwo[i] if i < len(wwo) else {}
+
+        sources = []
+        if o: sources.append("Open-Meteo")
+        if w: sources.append("WorldWeatherOnline")
+
+        days.append({
+            # Атмосфера — Open-Meteo
+            "date":         o.get("date", fallback_dates[i]),
+            "icon":         o.get("icon", "⛅"),
+            "t_min":        o.get("t_min", "—"),
+            "t_max":        o.get("t_max", "—"),
+            "wind_speed":   o.get("wind_speed", 0),
+            "wind_gusts":   o.get("wind_gusts", 0),
+            "wind_dir":     o.get("wind_dir", 0),
+            "wind_dir_str": o.get("wind_dir_str", "—"),
+            "precip":       o.get("precip", 0),
+            "prec_prob":    o.get("prec_prob", 0),
+            # Море — WorldWeatherOnline
+            "wave_height":  w.get("wave_height", 0),
+            "swell_height": w.get("swell_height"),
+            "swell_period": w.get("swell_period"),
+            "water_temp":   w.get("water_temp"),
+            # Мета
+            "sources": sources,
+        })
+    return days
 
 
 # ══════════════════════════════════════════════════════
 #  АНОНС
 # ══════════════════════════════════════════════════════
 
-async def announce_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Точка входа в диалог создания анонса."""
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
-        "🏄‍♂️ *Создаём анонс прогулки.*\n\n"
+        "🏄‍♂️ *Привет! Я помогу составить анонс САП-прогулки.*\n\n"
         "Отвечай на вопросы — я сформирую пост и отправлю его на проверку.\n\n"
-        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_",
-        parse_mode="Markdown",
-    )
+        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_", parse_mode="Markdown")
     return DATE
 
 async def get_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -343,7 +358,7 @@ async def get_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["time"] = update.message.text.strip()
-    await update.message.reply_text("🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно_", parse_mode="Markdown")
+    await update.message.reply_text("🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно (Без картинок)_", parse_mode="Markdown")
     return ROUTE
 
 async def get_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -422,12 +437,12 @@ async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if q.data == "announce_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Нажми *«🏄 Анонс прогулки»* в меню.", parse_mode="Markdown")
+        await q.edit_message_text("↩️ Начинаем заново. Напиши /start")
         return ConversationHandler.END
 
     d, author = ctx.user_data, q.from_user
-    post_text = build_post(d)
-    photo_id  = d.get("photo_id")
+    post_text   = build_post(d)
+    photo_id    = d.get("photo_id")
     author_info = f"@{author.username}" if author.username else f"id:{author.id}"
 
     pending = ctx.bot_data.setdefault("pending", {})
@@ -518,7 +533,7 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if q.data == "review_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Нажми *«🌊 Отзыв»* в меню.", parse_mode="Markdown")
+        await q.edit_message_text("↩️ Начинаем заново. Напиши /review")
         return ConversationHandler.END
 
     author      = q.from_user
@@ -568,9 +583,9 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer("⛔ Только администратор.", show_alert=True)
         return
 
-    action, key  = q.data.split(":", 1)
-    pending      = ctx.bot_data.get("pending", {})
-    post_data    = pending.pop(key, None)
+    action, key = q.data.split(":", 1)
+    pending     = ctx.bot_data.get("pending", {})
+    post_data   = pending.pop(key, None)
     if not post_data:
         await q.edit_message_text("⚠️ Данные не найдены. Попроси автора отправить повторно.")
         return
@@ -598,22 +613,12 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"⚠️ Ошибка при публикации:\n{e}")
             return
 
-        if post_data["type"] == "news":
-            news_text = _escape_md(post_data.get("text", ""))
-            news_cap  = f"📰 *Новость*\n\n{news_text}\n\n#сап #новости"
-            if post_data.get("photo_id"):
-                await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
-                                         caption=news_cap, parse_mode="Markdown")
-            else:
-                await ctx.bot.send_message(CHANNEL_ID, text=news_cap, parse_mode="Markdown")
-        label = "Анонс" if post_data["type"] == "announce" else ("Отзыв" if post_data["type"] == "review" else "Новость")
+        label          = "Анонс" if post_data["type"] == "announce" else "Отзыв"
         author_display = post_data.get("author_display", f"id:{user_id}")
-        pts_hint = ""
-        if post_data["type"] in ("announce", "review"):
-            pts_hint = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}"
         await q.edit_message_text(
             f"✅ {label} опубликован!\n\n"
-            f"👤 Автор: {author_display}{pts_hint}",
+            f"👤 Автор: {author_display}\n"
+            f"💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}",
         )
         try:
             await ctx.bot.send_message(user_id, "🎉 *Твой пост одобрен и опубликован в канале!*",
@@ -625,7 +630,7 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"❌ {label} отклонён.")
         try:
             await ctx.bot.send_message(user_id,
-                "😔 *К сожалению, твой пост отклонён.*\nПопробуй снова через меню 👇",
+                "😔 *К сожалению, твой пост отклонён.*\nПопробуй снова: /start или /review",
                 parse_mode="Markdown")
         except Exception: pass
 
@@ -638,7 +643,7 @@ async def schedule_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     entries = ctx.bot_data.get("schedule", [])
     if not entries:
         await update.message.reply_text(
-            "📭 *Ближайших прогулок пока нет.*\n\nСоздай анонс через меню 🏄‍♂️",
+            "📭 *Ближайших прогулок пока нет.*\n\nСоздай анонс через /start 🏄‍♂️",
             parse_mode="Markdown")
         return
     lines = ["🗓 *Ближайшие САП-прогулки:*\n"]
@@ -652,7 +657,7 @@ async def schedule_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
-#  ПОГОДА
+#  ПОГОДА — команда /weather
 # ══════════════════════════════════════════════════════
 
 async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -660,30 +665,50 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         days = await _fetch_all_weather()
     except Exception as e:
-        logger.error(f"Weather: {e}")
+        logger.error(f"Weather fetch error: {e}")
         await msg.edit_text("⚠️ Не удалось получить данные. Попробуй позже.")
         return
+
     lines = ["🌊 *Прогноз для острова Русский*\n" + "━"*16]
+
     for i, d in enumerate(days):
-        wind, wave = d["wind_speed"], d["wave_height"]
-        water = f"🌡 Вода: +{d['water_temp']}°C\n" if d.get("water_temp") else ""
-        swell = (f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
-                 if d.get("swell_height") and d.get("swell_period") else "")
-        hum  = f" | 💧 {d['humidity']}%" if d.get("humidity") else ""
-        pres = f" | 🌬 {d['pressure']} гПа" if d.get("pressure") else ""
-        prob = f" (вероятность {d['rain_prob']}%)" if d.get("rain_prob") else ""
-        rain = f"☔ Осадки: {d['precip']} мм{prob}\n" if d["precip"] > 0.1 else f"☔ Без осадков{prob}\n"
+        wind  = d["wind_speed"]
+        wave  = d["wave_height"]
+        gusts = d["wind_gusts"]
+
+        water_line = f"🌡 Вода: +{d['water_temp']}°C\n" if d.get("water_temp") else ""
+
+        swell_line = ""
+        if d.get("swell_height") and d.get("swell_period"):
+            swell_line = f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
+
+        prob = d.get("prec_prob", 0)
+        precip = d.get("precip", 0)
+        if precip > 0.1:
+            rain_line = f"☔ Осадки: {precip} мм (вероятность {prob}%)\n"
+        elif prob > 0:
+            rain_line = f"☔ Вероятность дождя: {prob}%\n"
+        else:
+            rain_line = "☔ Без осадков\n"
+
         lines.append(
-            f"\n📅 *{_date_label(d['date'])}* {_wmo_icon(d['wmo'])}\n"
-            f"🌡 Воздух: +{d['t_min']}°...+{d['t_max']}°C{hum}{pres}\n"
-            f"{water}💨 Ветер: {_deg_to_compass(d['wind_dir'])}, {wind} м/с "
-            f"(порывы {d['wind_gusts']} м/с) {_wind_dot(wind)}\n"
-            f"🌊 Волна: {wave} м, период {d['wave_period']} с {_wave_dot(wave)}\n"
-            f"{swell}{rain}\n{_sup_recommendations(d)}"
+            f"\n📅 *{_date_label(d['date'])}* {d['icon']}\n"
+            f"🌡 Воздух: +{d['t_min']}°...+{d['t_max']}°C\n"
+            f"{water_line}"
+            f"💨 Ветер: {d['wind_dir_str']}, {wind} м/с (порывы {gusts} м/с) {_wind_dot(wind)}\n"
+            f"🌊 Волна: {wave} м {_wave_dot(wave)}\n"
+            f"{swell_line}"
+            f"{rain_line}\n"
+            f"{_sup_recommendations(d)}"
         )
-        if i == 0: lines.append("\n\n" + "━"*16)
-    lines.append(f"\n\n_Данные: {' + '.join(days[0]['sources']) if days else 'Open-Meteo'}_")
+        if i == 0:
+            lines.append("\n" + "━"*16)
+
+    sources = days[0].get("sources", []) if days else []
+    if sources:
+        lines.append(f"\n_Данные: {' + '.join(sources)}_")
     lines.append("_⚠️ Прогноз приблизительный. Перед выходом проверяйте актуальную погоду._")
+
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -709,8 +734,8 @@ async def top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{medal} {_get_rank(pts)} @{_escape_md(username)} — {pts} {_pts_word(pts)}")
     lines.append(
         "\n_🪸 За отзыв о прогулке — 2 очка_\n_🦀 За опубликованный анонс — 1 очко_\n\n"
-        "*Звания:*\n_🪸 1-2 прогулки — Планктон_\n_🦀 3-5 прогулок — Баклан_\n"
-        "_🐙 6-10 прогулок — Ларга_\n_🦈 11-20 прогулок — Кракен_\n_🔱 21+ прогулок — Посейдон_"
+        "*Звания:*\n_🪸 1\\-2 прогулки — Планктон_\n_🦀 3\\-5 прогулок — Баклан_\n"
+        "_🐙 6\\-10 прогулок — Ларга_\n_🦈 11\\-20 прогулок — Кракен_\n_🔱 21\\+ прогулок — Посейдон_"
     )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -743,7 +768,6 @@ async def addpoints(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     args    = ctx.args
     ratings = _ratings(ctx.bot_data)
-
     if not args or len(args) < 2:
         if ratings:
             lines = ["👥 *Текущий рейтинг:*\n"]
@@ -757,14 +781,12 @@ async def addpoints(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "📊 Рейтинг пуст.\n\n_Использование: /addpoints username 5_",
                 parse_mode="Markdown")
         return
-
     username = args[0].lstrip("@")
     try:
         points = int(args[1])
     except ValueError:
         await update.message.reply_text("⚠️ Укажи целое число. Пример: /addpoints maximvk 5")
         return
-
     if username not in ratings:
         ratings[username] = {"points": 0}
     ratings[username]["points"] += points
@@ -885,115 +907,20 @@ SPIN_PHRASES = [
 ]
 
 async def spin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user_id  = update.effective_user.id
-    today    = datetime.now(VLAD_TZ).strftime("%Y-%m-%d")
-    spins    = ctx.bot_data.setdefault("spins", {})
-    last     = spins.get(str(user_id))
-
+    user_id = update.effective_user.id
+    today   = datetime.now(VLAD_TZ).strftime("%Y-%m-%d")
+    spins   = ctx.bot_data.setdefault("spins", {})
+    last    = spins.get(str(user_id))
     if last == today:
         await update.message.reply_text(
-            "🎰 Ты уже крутил колесо сегодня!\n\n"
-            "Возвращайся завтра — колесо ждёт 😄",
-        )
+            "🎰 Ты уже крутил колесо сегодня!\n\nВозвращайся завтра — колесо ждёт 😄")
         return
-
     phrase = random.choice(SPIN_PHRASES)
     spins[str(user_id)] = today
-
     await update.message.reply_text(
         f"🎰 *Колесо фортуны говорит...*\n\n{phrase}",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
-
-
-# ══════════════════════════════════════════════════════
-#  НОВОСТЬ
-# ══════════════════════════════════════════════════════
-
-async def news_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data.clear()
-    await update.message.reply_text(
-        "📰 *Добавить новость*\n\n"
-        "✍️ Напиши текст новости — я отправлю её на проверку администратору.",
-        parse_mode="Markdown",
-    )
-    return NEWS_TEXT
-
-async def get_news_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_text"] = update.message.text.strip()
-    keyboard = [
-        [InlineKeyboardButton("📷 Прикрепить фото", callback_data="news_add_photo")],
-        [InlineKeyboardButton("⏭ Пропустить",        callback_data="news_skip_photo")],
-    ]
-    await update.message.reply_text(
-        "🖼 Хочешь добавить фото к новости?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return NEWS_PHOTO
-
-async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "news_add_photo":
-        await q.edit_message_text("📷 Отправь фото для новости:")
-        return NEWS_PHOTO
-    ctx.user_data["news_photo_id"] = None
-    await _show_news_preview(q.message, ctx)
-    return NEWS_CONFIRM
-
-async def get_news_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_photo_id"] = update.message.photo[-1].file_id
-    await _show_news_preview(update.message, ctx)
-    return NEWS_CONFIRM
-
-async def _show_news_preview(message, ctx):
-    text     = ctx.user_data.get("news_text", "")
-    photo_id = ctx.user_data.get("news_photo_id")
-    preview  = (
-        f"*Предпросмотр новости:*\n\n"
-        f"📰 {_escape_md(text)}\n\n"
-        f"{'📎 Фото прикреплено' if photo_id else '🚫 Без фото'}"
-    )
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Отправить на проверку", callback_data="news_submit"),
-        InlineKeyboardButton("✏️ Начать заново",         callback_data="news_restart"),
-    ]])
-    await message.reply_text(preview, parse_mode="Markdown", reply_markup=keyboard)
-
-async def confirm_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "news_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Нажми *«📰 Добавить новость»* в меню.", parse_mode="Markdown")
-        return ConversationHandler.END
-
-    author      = q.from_user
-    author_info = f"@{author.username}" if author.username else f"id:{author.id}"
-    text        = ctx.user_data.get("news_text", "")
-    photo_id    = ctx.user_data.get("news_photo_id")
-
-    ctx.bot_data.setdefault("pending", {})[f"news_{author.id}"] = {
-        "type": "news", "text": text, "photo_id": photo_id,
-        "author_display": author_info,
-    }
-
-    mod_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:news_{author.id}"),
-        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:news_{author.id}"),
-    ]])
-    if photo_id:
-        await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"📰 *Новость от* {_escape_md(author_info)}\n{'─'*28}\n\n{_escape_md(text)}\n\n{'─'*28}\nОпубликовать в канал?",
-        parse_mode="Markdown", reply_markup=mod_keyboard,
-    )
-    await q.edit_message_text(
-        "⏳ *Новость отправлена на проверку.*\nКак только одобрят — появится в канале. Спасибо! 🙌",
-        parse_mode="Markdown",
-    )
-    return ConversationHandler.END
 
 # ══════════════════════════════════════════════════════
 #  ЗАПУСК
@@ -1003,12 +930,8 @@ def main():
     persistence = PicklePersistence(filepath="bot_data.pkl")
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
-    # Диалог создания анонса
     announce_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("announce", announce_start),
-            MessageHandler(filters.Regex(r"^🏄 Анонс прогулки$"), announce_start),
-        ],
+        entry_points=[CommandHandler("start", start)],
         states={
             DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
@@ -1023,16 +946,12 @@ def main():
             ],
             CONFIRM: [CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("announce", announce_start)],
+        fallbacks=[CommandHandler("start", start)],
         allow_reentry=True, per_message=False,
     )
 
-    # Диалог отзыва
     review_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("review", review_start),
-            MessageHandler(filters.Regex(r"^🌊 Отзыв$"), review_start),
-        ],
+        entry_points=[CommandHandler("review", review_start)],
         states={
             REVIEW_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)],
             REVIEW_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)],
@@ -1046,46 +965,16 @@ def main():
         allow_reentry=True, per_message=False,
     )
 
-    # Диалог новости
-    news_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("news", news_start),
-            MessageHandler(filters.Regex(r"^📰 Добавить новость$"), news_start),
-        ],
-        states={
-            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_text)],
-            NEWS_PHOTO: [
-                CallbackQueryHandler(news_photo_choice, pattern="^news_(add_photo|skip_photo)$"),
-                MessageHandler(filters.PHOTO, get_news_photo),
-            ],
-            NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
-        },
-        fallbacks=[CommandHandler("news", news_start)],
-        allow_reentry=True, per_message=False,
-    )
-
-    # Регистрация хендлеров
-    app.add_handler(CommandHandler("start", start))       # приветствие + меню
     app.add_handler(announce_conv)
     app.add_handler(review_conv)
-    app.add_handler(news_conv)
-    app.add_handler(CommandHandler("schedule", schedule_cmd))
-    app.add_handler(CommandHandler("weather",  weather))
-    app.add_handler(CommandHandler("top",      top))
-    app.add_handler(CommandHandler("rank",     rank))
+    app.add_handler(CommandHandler("schedule",  schedule_cmd))
+    app.add_handler(CommandHandler("weather",   weather))
+    app.add_handler(CommandHandler("top",       top))
+    app.add_handler(CommandHandler("rank",      rank))
     app.add_handler(CommandHandler("addpoints", addpoints))
     app.add_handler(CommandHandler("backup",    backup))
     app.add_handler(CommandHandler("spin",      spin))
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
-
-    # Кнопки меню вне диалогов (регистрируем последним — наименьший приоритет)
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(
-            r"^(📅 Расписание|🌤 Погода|🏆 Рейтинг|🎰 Колесо фортуны)$"
-        ),
-        menu_router,
-    ))
-
     app.job_queue.run_daily(year_end_job, time=dtime(23, 59, tzinfo=VLAD_TZ))
 
     logger.info("🏄 САП-бот запущен.")
