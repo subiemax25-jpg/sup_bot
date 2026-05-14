@@ -2,8 +2,8 @@
 🏄 САП-бот: анонсы + отзывы + погода + расписание + рейтинг
 ============================================================
 Погода:
-  - Open-Meteo  — ветер, температура, осадки (бесплатно, без ключа)
-  - WorldWeatherOnline Marine — волны, свелл, температура воды (бесплатно, 500 req/day)
+  - Open-Meteo            — ветер, температура, осадки (бесплатно, без ключа)
+  - WorldWeatherOnline    — волны, свелл, температура воды (WWO_KEY в Railway)
 
 Установка:  pip install "python-telegram-bot[job-queue]" aiohttp
 Запуск:     python3 bot.py
@@ -12,6 +12,8 @@
 import logging
 import asyncio
 import aiohttp
+import random
+import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -22,15 +24,14 @@ from telegram.ext import (
     ConversationHandler, CallbackQueryHandler,
     filters, ContextTypes, PicklePersistence
 )
-import os
 
 # ─────────────────────────────────────────────
-#  НАСТРОЙКИ
+#  НАСТРОЙКИ — все значения берутся из Railway Variables
 # ─────────────────────────────────────────────
-BOT_TOKEN  = os.environ.get("BOT_TOKEN",  "ВАШ_ТОКЕН_ОТ_BOTFATHER")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@ваш_канал")
-ADMIN_ID   = int(os.environ.get("ADMIN_ID", "123456789"))
-WWO_KEY    = os.environ.get("WWO_KEY", "")eq/day)
+BOT_TOKEN  = os.environ.get("BOT_TOKEN",  "")
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
+ADMIN_ID   = int(os.environ.get("ADMIN_ID", "0"))
+WWO_KEY    = os.environ.get("WWO_KEY",    "")
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -86,12 +87,14 @@ SUP_LAT = 42.948
 SUP_LON = 131.941
 VLAD_TZ = timezone(timedelta(hours=10))
 
-MONTHS_RU = ["","января","февраля","марта","апреля","мая","июня",
-              "июля","августа","сентября","октября","ноября","декабря"]
+MONTHS_RU = [
+    "", "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря"
+]
 
 def _deg_to_compass(deg: float) -> str:
-    dirs = ["С","ССВ","СВ","ВСВ","В","ВЮВ","ЮВ","ЮЮВ",
-            "Ю","ЮЮЗ","ЮЗ","ЗЮЗ","З","ЗСЗ","СЗ","ССЗ"]
+    dirs = ["С", "ССВ", "СВ", "ВСВ", "В", "ВЮВ", "ЮВ", "ЮЮВ",
+            "Ю", "ЮЮЗ", "ЮЗ", "ЗЮЗ", "З", "ЗСЗ", "СЗ", "ССЗ"]
     return dirs[round(deg / 22.5) % 16]
 
 def _wmo_icon(code: int) -> str:
@@ -104,8 +107,8 @@ def _wmo_icon(code: int) -> str:
     if code <= 86: return "🌨"
     return "⛈"
 
-def _wind_dot(s):  return "🟢" if s < 4 else "🟡" if s < 7 else "🟠" if s < 11 else "🔴"
-def _wave_dot(h):  return "🟢" if h < 0.3 else "🟡" if h < 0.6 else "🟠" if h < 1.0 else "🔴"
+def _wind_dot(s): return "🟢" if s < 4 else "🟡" if s < 7 else "🟠" if s < 11 else "🔴"
+def _wave_dot(h): return "🟢" if h < 0.3 else "🟡" if h < 0.6 else "🟠" if h < 1.0 else "🔴"
 
 def _verdict(wind, wave):
     if wind >= 12 or wave >= 1.0: return "🔴 Выход не рекомендуется"
@@ -182,10 +185,7 @@ def _sup_recommendations(d: dict) -> str:
 # ──────────────────────────────────────────────
 
 async def _fetch_open_meteo(session: aiohttp.ClientSession):
-    """
-    Open-Meteo — ветер, температура, осадки.
-    Полностью бесплатно, без ключа, без регистрации.
-    """
+    """Open-Meteo: ветер, температура, осадки. Бесплатно, без ключа."""
     try:
         resp = await session.get(
             "https://api.open-meteo.com/v1/forecast",
@@ -231,11 +231,7 @@ async def _fetch_open_meteo(session: aiohttp.ClientSession):
 
 
 async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
-    """
-    WorldWeatherOnline Marine API — волны, свелл, температура воды.
-    Бесплатный план: 500 запросов/день, без карты.
-    Зарегистрируйся на worldweatheronline.com → добавь WWO_KEY в Railway Variables.
-    """
+    """WorldWeatherOnline Marine: волны, свелл, температура воды."""
     if not key:
         return None
     try:
@@ -247,16 +243,14 @@ async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
                 "q":           f"{SUP_LAT},{SUP_LON}",
                 "format":      "json",
                 "num_of_days": 2,
-                "tp":          3,  # 3-часовые интервалы, берём максимум за день
+                "tp":          3,
             }
         )
         data = await resp.json()
-
         err = data.get("data", {}).get("error")
         if err:
             logger.warning(f"WWO Marine error: {err}")
             return None
-
         days_raw = data.get("data", {}).get("weather", [])
         result = []
         for day in days_raw[:2]:
@@ -273,9 +267,7 @@ async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
             swell_h = [_f(h, "swellHeight_m")    for h in hourly]
             swell_p = [_f(h, "swellPeriod_secs") for h in hourly]
             water_t = [_f(h, "waterTemp_C")      for h in hourly]
-
             max_idx = wave_h.index(max(wave_h)) if wave_h else 0
-
             result.append({
                 "wave_height":  round(max(wave_h),  1) if wave_h else 0,
                 "swell_height": round(max(swell_h), 1) if swell_h else None,
@@ -295,24 +287,18 @@ async def _fetch_all_weather() -> list:
             _fetch_wwo_marine(session, WWO_KEY),
             return_exceptions=True,
         )
-
     om  = om  if isinstance(om,  list) else []
     wwo = wwo if isinstance(wwo, list) else []
-
     today = date.today()
     fallback_dates = [today.isoformat(), (today + timedelta(days=1)).isoformat()]
-
     days = []
     for i in range(2):
         o = om[i]  if i < len(om)  else {}
         w = wwo[i] if i < len(wwo) else {}
-
         sources = []
         if o: sources.append("Open-Meteo")
         if w: sources.append("WorldWeatherOnline")
-
         days.append({
-            # Атмосфера — Open-Meteo
             "date":         o.get("date", fallback_dates[i]),
             "icon":         o.get("icon", "⛅"),
             "t_min":        o.get("t_min", "—"),
@@ -323,13 +309,11 @@ async def _fetch_all_weather() -> list:
             "wind_dir_str": o.get("wind_dir_str", "—"),
             "precip":       o.get("precip", 0),
             "prec_prob":    o.get("prec_prob", 0),
-            # Море — WorldWeatherOnline
             "wave_height":  w.get("wave_height", 0),
             "swell_height": w.get("swell_height"),
             "swell_period": w.get("swell_period"),
             "water_temp":   w.get("water_temp"),
-            # Мета
-            "sources": sources,
+            "sources":      sources,
         })
     return days
 
@@ -343,12 +327,15 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏄‍♂️ *Привет! Я помогу составить анонс САП-прогулки.*\n\n"
         "Отвечай на вопросы — я сформирую пост и отправлю его на проверку.\n\n"
-        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_", parse_mode="Markdown")
+        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_",
+        parse_mode="Markdown")
     return DATE
 
 async def get_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["date"] = update.message.text.strip()
-    await update.message.reply_text("📍 *Место сбора?*\n_Пример: Набережная Горького, у моста (ссылка 2Gis)_", parse_mode="Markdown")
+    await update.message.reply_text(
+        "📍 *Место сбора?*\n_Пример: Набережная Горького, у моста (ссылка 2Gis)_",
+        parse_mode="Markdown")
     return LOCATION
 
 async def get_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -358,12 +345,16 @@ async def get_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["time"] = update.message.text.strip()
-    await update.message.reply_text("🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно (Без картинок)_", parse_mode="Markdown")
+    await update.message.reply_text(
+        "🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно_",
+        parse_mode="Markdown")
     return ROUTE
 
 async def get_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["route"] = update.message.text.strip()
-    await update.message.reply_text("🕐 *Продолжительность прогулки?*\n_Пример: 2 часа_", parse_mode="Markdown")
+    await update.message.reply_text(
+        "🕐 *Продолжительность прогулки?*\n_Пример: 2 часа_",
+        parse_mode="Markdown")
     return DURATION
 
 async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -373,17 +364,24 @@ async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🏄 Все уровни",   callback_data="level_all")],
         [InlineKeyboardButton("💪 Опытные",       callback_data="level_advanced")],
     ]
-    await update.message.reply_text("🎯 *Уровень подготовки?*", parse_mode="Markdown",
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "🎯 *Уровень подготовки?*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard))
     return LEVEL
 
 async def get_level(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    levels = {"level_beginner":"🐣 Для новичков","level_all":"🏄 Все уровни","level_advanced":"💪 Опытные"}
+    levels = {
+        "level_beginner": "🐣 Для новичков",
+        "level_all":      "🏄 Все уровни",
+        "level_advanced": "💪 Опытные",
+    }
     ctx.user_data["level"] = levels[q.data]
     await q.edit_message_text(
-        f"Уровень: *{ctx.user_data['level']}* ✓\n\n👤 *Кто предложил прогулку?*\n_Пример: @username (телефон +7)_",
+        f"Уровень: *{ctx.user_data['level']}* ✓\n\n"
+        f"👤 *Кто предложил прогулку?*\n_Пример: @username (телефон +7)_",
         parse_mode="Markdown")
     return CONTACT
 
@@ -393,8 +391,10 @@ async def get_contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📷 Прикрепить фото", callback_data="add_photo")],
         [InlineKeyboardButton("⏭ Пропустить",        callback_data="skip_photo")],
     ]
-    await update.message.reply_text("🖼 *Хочешь добавить фото к анонсу?*", parse_mode="Markdown",
-                                    reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "🖼 *Хочешь добавить фото к анонсу?*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard))
     return PHOTO
 
 async def photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -430,8 +430,10 @@ async def show_announce_preview(message, ctx):
         InlineKeyboardButton("✅ Отправить на проверку", callback_data="announce_submit"),
         InlineKeyboardButton("✏️ Начать заново",         callback_data="announce_restart"),
     ]])
-    await message.reply_text(f"*Вот твой анонс:*\n\n{build_post(ctx.user_data)}",
-                             parse_mode="Markdown", reply_markup=keyboard)
+    await message.reply_text(
+        f"*Вот твой анонс:*\n\n{build_post(ctx.user_data)}",
+        parse_mode="Markdown",
+        reply_markup=keyboard)
 
 async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -440,26 +442,29 @@ async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("↩️ Начинаем заново. Напиши /start")
         return ConversationHandler.END
 
-    d, author = ctx.user_data, q.from_user
-    post_text   = build_post(d)
-    photo_id    = d.get("photo_id")
+    d, author  = ctx.user_data, q.from_user
+    post_text  = build_post(d)
+    photo_id   = d.get("photo_id")
     author_info = f"@{author.username}" if author.username else f"id:{author.id}"
 
     pending = ctx.bot_data.setdefault("pending", {})
     pending[f"announce_{author.id}"] = {
         "text": post_text, "photo_id": photo_id, "type": "announce",
         "author_display": author_info,
-        "schedule_entry": {k: d.get(k,"") for k in ["date","time","location","route","duration","level","contact"]},
+        "schedule_entry": {k: d.get(k, "") for k in ["date", "time", "location", "route", "duration", "level", "contact"]},
     }
 
     mod_keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:announce_{author.id}"),
         InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:announce_{author.id}"),
     ]])
-    if photo_id: await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
-    await ctx.bot.send_message(ADMIN_ID,
+    if photo_id:
+        await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
+    await ctx.bot.send_message(
+        ADMIN_ID,
         f"📬 *Новый анонс от* {_escape_md(author_info)}\n{'─'*28}\n\n{post_text}\n\n{'─'*28}\nОпубликовать в канал?",
-        parse_mode="Markdown", reply_markup=mod_keyboard)
+        parse_mode="Markdown",
+        reply_markup=mod_keyboard)
     await q.edit_message_text(
         "⏳ *Анонс отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
         parse_mode="Markdown")
@@ -496,17 +501,20 @@ async def get_review_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def get_review_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     media = ctx.user_data.setdefault("review_media", [])
     if len(media) >= 10:
-        await update.message.reply_text("⚠️ Максимум 10 файлов. Нажми *«Готово»*.", parse_mode="Markdown",
+        await update.message.reply_text(
+            "⚠️ Максимум 10 файлов. Нажми *«Готово»*.",
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Готово", callback_data="review_done")]]))
         return REVIEW_MEDIA
     if update.message.photo:
-        media.append({"type":"photo","file_id":update.message.photo[-1].file_id})
+        media.append({"type": "photo", "file_id": update.message.photo[-1].file_id})
     elif update.message.video:
-        media.append({"type":"video","file_id":update.message.video.file_id})
+        media.append({"type": "video", "file_id": update.message.video.file_id})
     count = len(media)
     await update.message.reply_text(
         f"{'📷' if update.message.photo else '🎥'} Файл {count} принят! "
-        f"{'Осталось: ' + str(10-count) if count < 10 else 'Максимум достигнут.'}\nНажми *«Готово»* когда закончишь.",
+        f"{'Осталось: ' + str(10 - count) if count < 10 else 'Максимум достигнут.'}\n"
+        f"Нажми *«Готово»* когда закончишь.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Готово", callback_data="review_done")]]))
     return REVIEW_MEDIA
@@ -526,7 +534,8 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]])
     await q.edit_message_text(
         f"*Твой отзыв:*\n\n💬 {_escape_md(comment)}\n\nОтзыв оставил: {_escape_md(author)}\n📎 Файлов: {len(media)}",
-        parse_mode="Markdown", reply_markup=keyboard)
+        parse_mode="Markdown",
+        reply_markup=keyboard)
     return REVIEW_CONFIRM
 
 async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -551,10 +560,12 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
         InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
     ]])
-    await ctx.bot.send_message(ADMIN_ID,
+    await ctx.bot.send_message(
+        ADMIN_ID,
         f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
         f"💬 {_escape_md(comment)}\n📎 Файлов: {len(media)}\n\n{'─'*28}\nОпубликовать в канал?",
-        parse_mode="Markdown", reply_markup=mod_keyboard)
+        parse_mode="Markdown",
+        reply_markup=mod_keyboard)
     await q.edit_message_text(
         "⏳ *Отзыв отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
         parse_mode="Markdown")
@@ -604,10 +615,12 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule.append(post_data["schedule_entry"])
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif post_data["type"] == "review":
-                caption = (f"🌊 *Впечатления от прогулки*\n\n"
-                           f"💬 {_escape_md(post_data['comment'])}\n\n"
-                           f"Отзыв оставил: {_escape_md(post_data['author'])}\n\n"
-                           f"#сап #отзыв #впечатления")
+                caption = (
+                    f"🌊 *Впечатления от прогулки*\n\n"
+                    f"💬 {_escape_md(post_data['comment'])}\n\n"
+                    f"Отзыв оставил: {_escape_md(post_data['author'])}\n\n"
+                    f"#сап #отзыв #впечатления"
+                )
                 await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
         except Exception as e:
             await q.edit_message_text(f"⚠️ Ошибка при публикации:\n{e}")
@@ -615,24 +628,28 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         label          = "Анонс" if post_data["type"] == "announce" else "Отзыв"
         author_display = post_data.get("author_display", f"id:{user_id}")
+        pts            = "2" if post_data["type"] == "review" else "1"
         await q.edit_message_text(
             f"✅ {label} опубликован!\n\n"
             f"👤 Автор: {author_display}\n"
-            f"💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {'2' if post_data['type'] == 'review' else '1'}",
+            f"💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {pts}"
         )
         try:
             await ctx.bot.send_message(user_id, "🎉 *Твой пост одобрен и опубликован в канале!*",
                                        parse_mode="Markdown")
-        except Exception: pass
+        except Exception:
+            pass
 
     elif action == "reject":
         label = "Анонс" if post_data["type"] == "announce" else "Отзыв"
         await q.edit_message_text(f"❌ {label} отклонён.")
         try:
-            await ctx.bot.send_message(user_id,
+            await ctx.bot.send_message(
+                user_id,
                 "😔 *К сожалению, твой пост отклонён.*\nПопробуй снова: /start или /review",
                 parse_mode="Markdown")
-        except Exception: pass
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════
@@ -648,10 +665,12 @@ async def schedule_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["🗓 *Ближайшие САП-прогулки:*\n"]
     for i, e in enumerate(entries, 1):
-        lines.append(f"*{i}. {_escape_md(e['date'])}*\n"
-                     f"⏰ {_escape_md(e['time'])}  🎯 {_escape_md(e['level'])}\n"
-                     f"📍 {_escape_md(e['location'])}\n"
-                     f"👤 {_escape_md(e['contact'])}\n")
+        lines.append(
+            f"*{i}. {_escape_md(e['date'])}*\n"
+            f"⏰ {_escape_md(e['time'])}  🎯 {_escape_md(e['level'])}\n"
+            f"📍 {_escape_md(e['location'])}\n"
+            f"👤 {_escape_md(e['contact'])}\n"
+        )
     lines.append("_Подробности — в канале._")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -669,7 +688,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("⚠️ Не удалось получить данные. Попробуй позже.")
         return
 
-    lines = ["🌊 *Прогноз для острова Русский*\n" + "━"*16]
+    lines = ["🌊 *Прогноз для острова Русский*\n" + "━" * 16]
 
     for i, d in enumerate(days):
         wind  = d["wind_speed"]
@@ -682,7 +701,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if d.get("swell_height") and d.get("swell_period"):
             swell_line = f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
 
-        prob = d.get("prec_prob", 0)
+        prob   = d.get("prec_prob", 0)
         precip = d.get("precip", 0)
         if precip > 0.1:
             rain_line = f"☔ Осадки: {precip} мм (вероятность {prob}%)\n"
@@ -702,7 +721,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"{_sup_recommendations(d)}"
         )
         if i == 0:
-            lines.append("\n" + "━"*16)
+            lines.append("\n" + "━" * 16)
 
     sources = days[0].get("sources", []) if days else []
     if sources:
@@ -726,11 +745,11 @@ async def top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown")
         return
     sorted_r = sorted(ratings.items(), key=lambda x: x[1]["points"], reverse=True)
-    medals   = ["🥇","🥈","🥉"]
+    medals   = ["🥇", "🥈", "🥉"]
     lines    = [f"🏆 *Рейтинг сезона {year}*\n"]
     for i, (username, data) in enumerate(sorted_r, 1):
         pts   = data["points"]
-        medal = medals[i-1] if i <= 3 else f"{i}."
+        medal = medals[i - 1] if i <= 3 else f"{i}."
         lines.append(f"{medal} {_get_rank(pts)} @{_escape_md(username)} — {pts} {_pts_word(pts)}")
     lines.append(
         "\n_🪸 За отзыв о прогулке — 2 очка_\n_🦀 За опубликованный анонс — 1 очко_\n\n"
@@ -811,16 +830,17 @@ async def backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def year_end_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(VLAD_TZ)
-    if now.month != 12 or now.day != 31: return
+    if now.month != 12 or now.day != 31:
+        return
     ratings = _ratings(context.bot_data)
     year    = now.year
     if ratings:
         sorted_r = sorted(ratings.items(), key=lambda x: x[1]["points"], reverse=True)
-        medals   = ["🥇","🥈","🥉"]
+        medals   = ["🥇", "🥈", "🥉"]
         lines    = [f"🎉 *Итоги сезона {year}!*\n\nНаши лучшие сёрферы года:\n"]
         for i, (username, data) in enumerate(sorted_r[:10], 1):
             pts   = data["points"]
-            medal = medals[i-1] if i <= 3 else f"{i}."
+            medal = medals[i - 1] if i <= 3 else f"{i}."
             lines.append(f"{medal} {_get_rank(pts)} @{username} — {pts} {_pts_word(pts)}")
         lines.append(f"\nВсего участников: {len(ratings)}")
         lines.append("Поздравляем всех! До встречи на воде в следующем году 🏄‍♂️")
@@ -834,8 +854,6 @@ async def year_end_job(context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════
 #  КОЛЕСО ФОРТУНЫ
 # ══════════════════════════════════════════════════════
-
-import random
 
 SPIN_PHRASES = [
     "Сегодня ларга уже заняла твоё место на воде\nи уходить не планирует 🦭",
@@ -910,15 +928,13 @@ async def spin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     today   = datetime.now(VLAD_TZ).strftime("%Y-%m-%d")
     spins   = ctx.bot_data.setdefault("spins", {})
-    last    = spins.get(str(user_id))
-    if last == today:
+    if spins.get(str(user_id)) == today:
         await update.message.reply_text(
             "🎰 Ты уже крутил колесо сегодня!\n\nВозвращайся завтра — колесо ждёт 😄")
         return
-    phrase = random.choice(SPIN_PHRASES)
     spins[str(user_id)] = today
     await update.message.reply_text(
-        f"🎰 *Колесо фортуны говорит...*\n\n{phrase}",
+        f"🎰 *Колесо фортуны говорит...*\n\n{random.choice(SPIN_PHRASES)}",
         parse_mode="Markdown")
 
 
@@ -979,6 +995,7 @@ def main():
 
     logger.info("🏄 САП-бот запущен.")
     app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
