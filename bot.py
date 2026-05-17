@@ -2,8 +2,9 @@
 🏄 САП-бот: анонсы + отзывы + новости + погода + расписание + рейтинг
 =====================================================================
 Погода:
-  - Open-Meteo            — ветер, температура, осадки (бесплатно, без ключа)
-  - WorldWeatherOnline    — волны, свелл, температура воды (WWO_KEY в Railway)
+  - Open-Meteo (hourly)    — ветер, температура, осадки; 3 локации
+  - Open-Meteo Marine      — волны по часам; 3 локации
+  - WorldWeatherOnline     — свелл, температура воды для о. Русский
 
 Установка:  pip install "python-telegram-bot[job-queue]" aiohttp
 Запуск:     python3 bot.py
@@ -12,6 +13,7 @@
 import logging
 import asyncio
 import aiohttp
+import math
 import random
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
@@ -59,8 +61,9 @@ def _main_keyboard():
 #  СОСТОЯНИЯ ДИАЛОГОВ
 # ──────────────────────────────────────────────
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
-REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 13)
-NEWS_TEXT, NEWS_PHOTO, NEWS_CONFIRM = range(13, 16)
+# REVIEW: добавлен шаг REVIEW_PARTICIPANTS между REVIEW_AUTHOR и REVIEW_MEDIA
+REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_PARTICIPANTS, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 14)
+NEWS_TEXT, NEWS_PHOTO, NEWS_CONFIRM = range(14, 17)
 
 # ──────────────────────────────────────────────
 #  РЕЙТИНГ
@@ -99,8 +102,17 @@ def _ratings(bot_data: dict) -> dict:
 # ──────────────────────────────────────────────
 #  ПОГОДА — константы и вспомогательные функции
 # ──────────────────────────────────────────────
-SUP_LAT = 42.948
-SUP_LON = 131.941
+
+# Три локации: Русский + оба залива
+WEATHER_LOCATIONS = [
+    {"name": "Остров Русский",    "lat": 42.948, "lon": 131.941, "emoji": "🏝"},
+    {"name": "Амурский залив",    "lat": 43.20,  "lon": 131.72,  "emoji": "🌊"},
+    {"name": "Уссурийский залив", "lat": 43.05,  "lon": 132.45,  "emoji": "🌊"},
+]
+
+# Для WWO (только Русский)
+SUP_LAT = WEATHER_LOCATIONS[0]["lat"]
+SUP_LON = WEATHER_LOCATIONS[0]["lon"]
 VLAD_TZ = timezone(timedelta(hours=10))
 
 MONTHS_RU = [
@@ -162,6 +174,14 @@ def _date_label(iso: str) -> str:
         prefix = ""
     return f"{prefix}, {d.day} {MONTHS_RU[d.month]}" if prefix else f"{d.day} {MONTHS_RU[d.month]}"
 
+def _circular_mean(angles: list) -> int:
+    """Корректное среднее для направлений ветра (учитывает переход 359°→0°)."""
+    if not angles:
+        return 0
+    sin_s = sum(math.sin(math.radians(a)) for a in angles)
+    cos_s = sum(math.cos(math.radians(a)) for a in angles)
+    return round(math.degrees(math.atan2(sin_s, cos_s)) % 360)
+
 def _sup_recommendations(d: dict) -> str:
     wind    = d.get("wind_speed", 0)
     wave    = d.get("wave_height", 0)
@@ -200,52 +220,130 @@ def _sup_recommendations(d: dict) -> str:
 #  ПОГОДА — получение данных
 # ──────────────────────────────────────────────
 
-async def _fetch_open_meteo(session: aiohttp.ClientSession):
+def _process_daylight_hourly(wh: dict, mh: dict) -> list:
+    """
+    Принимает почасовые данные Open-Meteo (timezone=Asia/Vladivostok).
+    Фильтрует часы 07:00–20:59 (световой день).
+    Возвращает список из 2 дней со средними значениями.
+    """
+    days: dict = {}
+    times = wh.get("time", [])
+
+    for i, t in enumerate(times):
+        try:
+            hour = int(t[11:13])   # "2026-05-18T09:00" → 9
+        except Exception:
+            continue
+        if not (7 <= hour <= 20):
+            continue
+        date_str = t[:10]
+        d = days.setdefault(date_str, {
+            "wind": [], "gusts": [], "wind_dir": [],
+            "temp": [], "precip": [], "wmo": [], "prec_prob": [],
+            "wave": [], "wave_period": [],
+        })
+
+        def _v(key):
+            arr = wh.get(key, [])
+            return arr[i] if arr and i < len(arr) and arr[i] is not None else None
+
+        v = _v("windspeed_10m");              
+        if v is not None: d["wind"].append(float(v))
+        v = _v("windgusts_10m");              
+        if v is not None: d["gusts"].append(float(v))
+        v = _v("winddirection_10m");          
+        if v is not None: d["wind_dir"].append(float(v))
+        v = _v("temperature_2m");             
+        if v is not None: d["temp"].append(float(v))
+        v = _v("precipitation");              
+        if v is not None: d["precip"].append(float(v))
+        v = _v("weathercode");                
+        if v is not None: d["wmo"].append(int(v))
+        v = _v("precipitation_probability"); 
+        if v is not None: d["prec_prob"].append(float(v))
+
+    # Marine (могут быть те же временны́е метки)
+    m_times = mh.get("time", []) if mh else []
+    for i, t in enumerate(m_times):
+        try:
+            hour = int(t[11:13])
+        except Exception:
+            continue
+        if not (7 <= hour <= 20):
+            continue
+        date_str = t[:10]
+        if date_str not in days:
+            continue
+        d = days[date_str]
+
+        def _mv(key):
+            arr = mh.get(key, [])
+            return arr[i] if arr and i < len(arr) and arr[i] is not None else None
+
+        v = _mv("wave_height"); 
+        if v is not None: d["wave"].append(float(v))
+        v = _mv("wave_period"); 
+        if v is not None: d["wave_period"].append(float(v))
+
+    def avg(lst):    return round(sum(lst) / len(lst), 1) if lst else 0.0
+    def avg_i(lst):  return round(sum(lst) / len(lst))    if lst else 0
+    def mx_prob(lst):return round(max(lst))                if lst else 0
+
+    result = []
+    for date_str in sorted(days)[:2]:
+        d = days[date_str]
+        result.append({
+            "date":        date_str,
+            "icon":        _wmo_icon(max(set(d["wmo"]), key=d["wmo"].count) if d["wmo"] else 0),
+            "t_min":       round(min(d["temp"])) if d["temp"] else "—",
+            "t_max":       round(max(d["temp"])) if d["temp"] else "—",
+            "wind_speed":  avg(d["wind"]),
+            "wind_gusts":  avg(d["gusts"]),
+            "wind_dir":    _circular_mean(d["wind_dir"]),
+            "wind_dir_str":_deg_to_compass(_circular_mean(d["wind_dir"])),
+            "precip":      round(sum(d["precip"]), 1),
+            "prec_prob":   mx_prob(d["prec_prob"]),
+            "wave_height": avg(d["wave"]),
+            "wave_period": avg_i(d["wave_period"]),
+        })
+    return result
+
+
+async def _fetch_location_weather(session: aiohttp.ClientSession, lat: float, lon: float) -> list:
+    """Почасовой прогноз Open-Meteo + Marine для одной локации, средние за 07–21."""
+    t = aiohttp.ClientTimeout(total=12)
     try:
-        resp = await session.get(
-            "https://api.open-meteo.com/v1/forecast",
-            timeout=aiohttp.ClientTimeout(total=10),
+        w = await (await session.get(
+            "https://api.open-meteo.com/v1/forecast", timeout=t,
             params={
-                "latitude":        SUP_LAT,
-                "longitude":       SUP_LON,
+                "latitude": lat, "longitude": lon,
                 "wind_speed_unit": "ms",
-                "timezone":        "Asia/Vladivostok",
-                "forecast_days":   2,
-                "daily": ",".join([
-                    "weathercode",
-                    "temperature_2m_max",
-                    "temperature_2m_min",
-                    "windspeed_10m_max",
-                    "windgusts_10m_max",
-                    "winddirection_10m_dominant",
-                    "precipitation_sum",
-                    "precipitation_probability_max",
+                "timezone": "Asia/Vladivostok",
+                "forecast_days": 2,
+                "hourly": ",".join([
+                    "temperature_2m", "windspeed_10m", "windgusts_10m",
+                    "winddirection_10m", "precipitation",
+                    "precipitation_probability", "weathercode",
                 ]),
             }
-        )
-        data = await resp.json()
-        d = data["daily"]
-        result = []
-        for i in range(2):
-            result.append({
-                "date":         d["time"][i],
-                "icon":         _wmo_icon(d["weathercode"][i]),
-                "t_min":        round(d["temperature_2m_min"][i]),
-                "t_max":        round(d["temperature_2m_max"][i]),
-                "wind_speed":   round(d["windspeed_10m_max"][i], 1),
-                "wind_gusts":   round(d["windgusts_10m_max"][i], 1),
-                "wind_dir":     d["winddirection_10m_dominant"][i],
-                "wind_dir_str": _deg_to_compass(d["winddirection_10m_dominant"][i]),
-                "precip":       round(d["precipitation_sum"][i] or 0, 1),
-                "prec_prob":    int(d.get("precipitation_probability_max", [0, 0])[i] or 0),
-            })
-        return result
+        )).json()
+        m = await (await session.get(
+            "https://marine-api.open-meteo.com/v1/marine", timeout=t,
+            params={
+                "latitude": lat, "longitude": lon,
+                "timezone": "Asia/Vladivostok",
+                "forecast_days": 2,
+                "hourly": "wave_height,wave_period",
+            }
+        )).json()
+        return _process_daylight_hourly(w.get("hourly", {}), m.get("hourly", {}))
     except Exception as ex:
-        logger.warning(f"Open-Meteo: {ex}")
-        return None
+        logger.warning(f"Open-Meteo {lat},{lon}: {ex}")
+        return []
 
 
-async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
+async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str) -> list | None:
+    """WWO Marine — свелл и температура воды для о. Русский (только световой день)."""
     if not key:
         return None
     try:
@@ -253,39 +351,40 @@ async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
             "https://api.worldweatheronline.com/premium/v1/marine.ashx",
             timeout=aiohttp.ClientTimeout(total=15),
             params={
-                "key":         key,
-                "q":           f"{SUP_LAT},{SUP_LON}",
-                "format":      "json",
-                "num_of_days": 2,
-                "tp":          3,
+                "key": key, "q": f"{SUP_LAT},{SUP_LON}",
+                "format": "json", "num_of_days": 2, "tp": 3,
             }
         )
-        data = await resp.json()
-        err = data.get("data", {}).get("error")
+        data     = await resp.json()
+        err      = data.get("data", {}).get("error")
         if err:
             logger.warning(f"WWO Marine error: {err}")
             return None
         days_raw = data.get("data", {}).get("weather", [])
-        result = []
+        result   = []
         for day in days_raw[:2]:
             hourly = day.get("hourly", [])
-            if not hourly:
-                result.append({})
-                continue
+            # Фильтрация светового дня: поле "time" = "0","300","600",...,"2100"
+            day_hourly = [
+                h for h in hourly
+                if 700 <= int(h.get("time", "0")) <= 2000
+            ]
+            if not day_hourly:
+                day_hourly = hourly   # fallback — берём все если пусто
 
             def _f(h, k, default=0.0):
                 try: return float(h.get(k, default) or default)
                 except: return default
 
-            wave_h  = [_f(h, "sigHeight_m")      for h in hourly]
-            swell_h = [_f(h, "swellHeight_m")    for h in hourly]
-            swell_p = [_f(h, "swellPeriod_secs") for h in hourly]
-            water_t = [_f(h, "waterTemp_C")      for h in hourly]
-            max_idx = wave_h.index(max(wave_h)) if wave_h else 0
+            wave_h  = [_f(h, "sigHeight_m")      for h in day_hourly]
+            swell_h = [_f(h, "swellHeight_m")    for h in day_hourly]
+            swell_p = [_f(h, "swellPeriod_secs") for h in day_hourly]
+            water_t = [_f(h, "waterTemp_C")       for h in day_hourly]
+
             result.append({
-                "wave_height":  round(max(wave_h),  1) if wave_h else 0,
-                "swell_height": round(max(swell_h), 1) if swell_h else None,
-                "swell_period": round(swell_p[max_idx]) if swell_p else None,
+                "wave_height":  round(sum(wave_h)  / len(wave_h),  1) if wave_h  else 0,
+                "swell_height": round(max(swell_h), 1)                if swell_h else None,
+                "swell_period": round(sum(swell_p) / len(swell_p))    if swell_p else None,
                 "water_temp":   round(sum(water_t) / len(water_t), 1) if water_t else None,
             })
         return result if result else None
@@ -295,41 +394,39 @@ async def _fetch_wwo_marine(session: aiohttp.ClientSession, key: str):
 
 
 async def _fetch_all_weather() -> list:
+    """
+    Параллельно загружает почасовой прогноз для 3 локаций + WWO для Русского.
+    Возвращает список словарей: [{"location": {...}, "days": [day1, day2]}, ...].
+    """
     async with aiohttp.ClientSession() as session:
-        om, wwo = await asyncio.gather(
-            _fetch_open_meteo(session),
-            _fetch_wwo_marine(session, WWO_KEY),
-            return_exceptions=True,
-        )
-    om  = om  if isinstance(om,  list) else []
-    wwo = wwo if isinstance(wwo, list) else []
-    today = date.today()
-    fallback_dates = [today.isoformat(), (today + timedelta(days=1)).isoformat()]
-    days = []
-    for i in range(2):
-        o = om[i]  if i < len(om)  else {}
-        w = wwo[i] if i < len(wwo) else {}
-        sources = []
-        if o: sources.append("Open-Meteo")
-        if w: sources.append("WorldWeatherOnline")
-        days.append({
-            "date":         o.get("date", fallback_dates[i]),
-            "icon":         o.get("icon", "⛅"),
-            "t_min":        o.get("t_min", "—"),
-            "t_max":        o.get("t_max", "—"),
-            "wind_speed":   o.get("wind_speed", 0),
-            "wind_gusts":   o.get("wind_gusts", 0),
-            "wind_dir":     o.get("wind_dir", 0),
-            "wind_dir_str": o.get("wind_dir_str", "—"),
-            "precip":       o.get("precip", 0),
-            "prec_prob":    o.get("prec_prob", 0),
-            "wave_height":  w.get("wave_height", 0),
-            "swell_height": w.get("swell_height"),
-            "swell_period": w.get("swell_period"),
-            "water_temp":   w.get("water_temp"),
-            "sources":      sources,
-        })
-    return days
+        loc_tasks = [
+            _fetch_location_weather(session, loc["lat"], loc["lon"])
+            for loc in WEATHER_LOCATIONS
+        ]
+        wwo_task = _fetch_wwo_marine(session, WWO_KEY)
+        all_res  = await asyncio.gather(*loc_tasks, wwo_task, return_exceptions=True)
+
+    n   = len(WEATHER_LOCATIONS)
+    wwo = all_res[n] if isinstance(all_res[n], list) else []
+
+    location_data = []
+    for i, loc in enumerate(WEATHER_LOCATIONS):
+        days = all_res[i] if isinstance(all_res[i], list) else []
+        # Для Русского острова (i==0) обогащаем данными WWO
+        if i == 0:
+            for j, day in enumerate(days):
+                w = wwo[j] if j < len(wwo) else {}
+                # Приоритет у WWO по волне если есть
+                if w.get("wave_height"):
+                    day["wave_height"] = w["wave_height"]
+                day["swell_height"] = w.get("swell_height")
+                day["swell_period"] = w.get("swell_period")
+                day["water_temp"]   = w.get("water_temp")
+                day["sources"] = (["Open-Meteo"]
+                                  + (["WorldWeatherOnline"] if wwo else []))
+        location_data.append({"location": loc, "days": days})
+
+    return location_data
 
 
 # ══════════════════════════════════════════════════════
@@ -513,17 +610,50 @@ async def review_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def get_review_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["review_comment"] = update.message.text.strip()
     await update.message.reply_text(
-        "👤 *Как тебя подписать?*\n_Укажи только одного автора — своё имя или @username_\n_Пример: Максим или @maximvk_",
+        "👤 *Как тебя подписать?*\n"
+        "_Укажи только одного автора — своё имя или @username_\n"
+        "_Пример: Максим или @maximvk_",
         parse_mode="Markdown")
     return REVIEW_AUTHOR
 
 async def get_review_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["review_author"] = update.message.text.strip()
     await update.message.reply_text(
-        "📸 *Отправь фото или видео с прогулки.*\n\nДо 10 файлов — по одному.\nКогда закончишь — нажми *«Готово»*.",
+        "👥 *Кто ещё был на прогулке?*\n\n"
+        "_Перечисли участников через пробел или с новой строки._\n"
+        "_Формат: @username — если есть нижнее подчёркивание, пишем его точно._\n"
+        "_Можно и просто имена: Максим, Аня._\n"
+        "_Количество не ограничено._",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Готово", callback_data="review_done")]]))
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⏭ Пропустить", callback_data="skip_participants")
+        ]]))
+    return REVIEW_PARTICIPANTS
+
+async def get_review_participants(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Пользователь ввёл список участников текстом."""
+    ctx.user_data["review_participants"] = update.message.text.strip()
+    await _prompt_review_media(update.message)
     return REVIEW_MEDIA
+
+async def skip_participants_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Нажата кнопка «Пропустить» на шаге участников."""
+    q = update.callback_query
+    await q.answer()
+    ctx.user_data["review_participants"] = ""
+    await _prompt_review_media(q.message)
+    return REVIEW_MEDIA
+
+async def _prompt_review_media(message):
+    """Вспомогательная: показывает приглашение загрузить медиа."""
+    await message.reply_text(
+        "📸 *Отправь фото или видео с прогулки.*\n\n"
+        "До 10 файлов — по одному.\n"
+        "Когда закончишь — нажми *«Готово»*.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Готово", callback_data="review_done")
+        ]]))
 
 async def get_review_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     media = ctx.user_data.setdefault("review_media", [])
@@ -549,18 +679,25 @@ async def get_review_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    media   = ctx.user_data.get("review_media", [])
-    comment = ctx.user_data.get("review_comment", "")
-    author  = ctx.user_data.get("review_author", "")
+    media        = ctx.user_data.get("review_media", [])
+    comment      = ctx.user_data.get("review_comment", "")
+    author       = ctx.user_data.get("review_author", "")
+    participants = ctx.user_data.get("review_participants", "")
+
     if not media:
         await q.edit_message_text("⚠️ Пришли хотя бы один файл, а потом нажми «Готово».")
         return REVIEW_MEDIA
+
+    parts_line = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Отправить на проверку", callback_data="review_submit"),
         InlineKeyboardButton("✏️ Начать заново",         callback_data="review_restart"),
     ]])
     await q.edit_message_text(
-        f"*Твой отзыв:*\n\n💬 {_escape_md(comment)}\n\nОтзыв оставил: {_escape_md(author)}\n📎 Файлов: {len(media)}",
+        f"*Твой отзыв:*\n\n"
+        f"💬 {_escape_md(comment)}\n\n"
+        f"Отзыв оставил: {_escape_md(author)}{parts_line}\n"
+        f"📎 Файлов: {len(media)}",
         parse_mode="Markdown",
         reply_markup=keyboard)
     return REVIEW_CONFIRM
@@ -572,17 +709,23 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("↩️ Начинаем заново. Нажми 📸 Отзыв")
         return ConversationHandler.END
 
-    author      = q.from_user
-    author_info = ctx.user_data.get("review_author", f"@{author.username}" if author.username else f"id:{author.id}")
-    comment     = ctx.user_data.get("review_comment", "")
-    media       = ctx.user_data.get("review_media", [])
+    author       = q.from_user
+    author_info  = ctx.user_data.get("review_author", f"@{author.username}" if author.username else f"id:{author.id}")
+    comment      = ctx.user_data.get("review_comment", "")
+    participants = ctx.user_data.get("review_participants", "")
+    media        = ctx.user_data.get("review_media", [])
 
     ctx.bot_data.setdefault("pending", {})[f"review_{author.id}"] = {
-        "type": "review", "comment": comment, "media": media,
-        "author": author_info, "author_display": author_info,
+        "type":         "review",
+        "comment":      comment,
+        "media":        media,
+        "author":       author_info,
+        "author_display": author_info,
+        "participants": participants,
     }
 
     await _send_media_group(ctx, ADMIN_ID, media, caption=f"💬 {comment}")
+    parts_hint = f"\n👥 Участники: {participants}" if participants else ""
     mod_keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
         InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
@@ -590,7 +733,8 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ctx.bot.send_message(
         ADMIN_ID,
         f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
-        f"💬 {_escape_md(comment)}\n📎 Файлов: {len(media)}\n\n{'─'*28}\nОпубликовать в канал?",
+        f"💬 {_escape_md(comment)}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}\n\n"
+        f"{'─'*28}\nОпубликовать в канал?",
         parse_mode="Markdown",
         reply_markup=mod_keyboard)
     await q.edit_message_text(
@@ -739,10 +883,12 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule.append(post_data["schedule_entry"])
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif ptype == "review":
+                participants = post_data.get("participants", "")
+                parts_line   = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
                 caption = (
                     f"🌊 *Впечатления от прогулки*\n\n"
                     f"💬 {_escape_md(post_data['comment'])}\n\n"
-                    f"Отзыв оставил: {_escape_md(post_data['author'])}\n\n"
+                    f"Отзыв оставил: {_escape_md(post_data['author'])}{parts_line}\n\n"
                     f"#сап #отзыв #впечатления"
                 )
                 await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
@@ -803,55 +949,152 @@ async def schedule_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
+#  БЭКАП И ВОССТАНОВЛЕНИЕ РАСПИСАНИЯ
+# ══════════════════════════════════════════════════════
+
+async def schedulebackup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Только для администратора.
+    Выводит текущее расписание в виде команд /addschedule для восстановления после деплоя.
+
+    Сценарий:
+      1. Перед деплоем: /schedulebackup → скопировать список команд
+      2. После деплоя: отправить сохранённые команды по одной боту
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    schedule = ctx.bot_data.get("schedule", [])
+    if not schedule:
+        await update.message.reply_text("📭 Расписание пусто — нечего сохранять.")
+        return
+    fields = ["date", "time", "location", "route", "duration", "level", "contact"]
+    lines  = [
+        "📋 *Резервная копия расписания*\n"
+        "_(скопируй и сохрани, отправь после деплоя по одной команде)_\n"
+    ]
+    for e in schedule:
+        parts   = [str(e.get(k, "")).replace("|", "/") for k in fields]  # | — разделитель
+        encoded = "|".join(parts)
+        lines.append(f"/addschedule {encoded}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def addschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Только для администратора.
+    Добавляет запись в расписание из строки-бэкапа.
+    Формат: /addschedule дата|время|место|маршрут|длительность|уровень|контакт
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    text = update.message.text.strip()
+    if " " not in text:
+        await update.message.reply_text(
+            "Использование:\n"
+            "`/addschedule дата|время|место|маршрут|длительность|уровень|контакт`\n\n"
+            "Разделитель полей — вертикальная черта `|`",
+            parse_mode="Markdown")
+        return
+    raw   = text.split(" ", 1)[1]
+    parts = raw.split("|")
+    if len(parts) < 7:
+        await update.message.reply_text(
+            f"⚠️ Нужно 7 полей через `|`, получено {len(parts)}.\n"
+            "Формат: дата|время|место|маршрут|длительность|уровень|контакт",
+            parse_mode="Markdown")
+        return
+    keys  = ["date", "time", "location", "route", "duration", "level", "contact"]
+    entry = {k: parts[i].strip() for i, k in enumerate(keys)}
+    schedule = ctx.bot_data.setdefault("schedule", [])
+    schedule.append(entry)
+    ctx.bot_data["schedule"] = schedule[-20:]
+    await update.message.reply_text(
+        f"✅ Добавлено в расписание:\n"
+        f"📅 {entry['date']} | ⏰ {entry['time']}\n"
+        f"📍 {entry['location']}"
+    )
+
+
+# ══════════════════════════════════════════════════════
 #  ПОГОДА
 # ══════════════════════════════════════════════════════
 
 async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⏳ Загружаю прогноз для острова Русский...")
+    msg = await update.message.reply_text(
+        "⏳ Загружаю прогноз для острова Русский и заливов...")
     try:
-        days = await _fetch_all_weather()
+        location_data = await _fetch_all_weather()
     except Exception as e:
         logger.error(f"Weather fetch error: {e}")
         await msg.edit_text("⚠️ Не удалось получить данные. Попробуй позже.")
         return
 
-    lines = ["🌊 *Прогноз для острова Русский*\n" + "━" * 16]
-    for i, d in enumerate(days):
-        wind  = d["wind_speed"]
-        wave  = d["wave_height"]
-        gusts = d["wind_gusts"]
+    lines = [
+        "🌊 *Прогноз погоды*",
+        "_Средние показатели за световой день 07:00–21:00_",
+        "━" * 16,
+    ]
 
-        water_line = f"🌡 Вода: +{d['water_temp']}°C\n" if d.get("water_temp") else ""
-        swell_line = ""
-        if d.get("swell_height") and d.get("swell_period"):
-            swell_line = f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
+    for loc_idx, loc_entry in enumerate(location_data):
+        loc      = loc_entry["location"]
+        days     = loc_entry["days"]
+        is_main  = (loc_idx == 0)   # Остров Русский — полный блок
 
-        prob   = d.get("prec_prob", 0)
-        precip = d.get("precip", 0)
-        if precip > 0.1:
-            rain_line = f"☔ Осадки: {precip} мм (вероятность {prob}%)\n"
-        elif prob > 0:
-            rain_line = f"☔ Вероятность дождя: {prob}%\n"
-        else:
-            rain_line = "☔ Без осадков\n"
+        lines.append(f"\n{loc['emoji']} *{loc['name']}*")
 
-        lines.append(
-            f"\n📅 *{_date_label(d['date'])}* {d['icon']}\n"
-            f"🌡 Воздух: +{d['t_min']}°...+{d['t_max']}°C\n"
-            f"{water_line}"
-            f"💨 Ветер: {d['wind_dir_str']}, {wind} м/с (порывы {gusts} м/с) {_wind_dot(wind)}\n"
-            f"🌊 Волна: {wave} м {_wave_dot(wave)}\n"
-            f"{swell_line}"
-            f"{rain_line}\n"
-            f"{_sup_recommendations(d)}"
-        )
-        if i == 0:
+        if not days:
+            lines.append("_Данные временно недоступны_")
+            continue
+
+        for i, d in enumerate(days):
+            wind  = d.get("wind_speed", 0)
+            wave  = d.get("wave_height", 0)
+            gusts = d.get("wind_gusts", 0)
+
+            if is_main:
+                # ── Полный блок для Острова Русский ──
+                water_line = f"🌡 Вода: +{d['water_temp']}°C\n" if d.get("water_temp") else ""
+                swell_line = ""
+                if d.get("swell_height") and d.get("swell_period"):
+                    swell_line = f"〰️ Свелл: {d['swell_height']} м, период {int(d['swell_period'])} с\n"
+                prob   = d.get("prec_prob", 0)
+                precip = d.get("precip", 0)
+                if precip > 0.1:
+                    rain_line = f"☔ Осадки: {precip} мм (вероятность {prob}%)\n"
+                elif prob > 0:
+                    rain_line = f"☔ Вероятность дождя: {prob}%\n"
+                else:
+                    rain_line = "☔ Без осадков\n"
+
+                lines.append(
+                    f"\n📅 *{_date_label(d['date'])}* {d['icon']}\n"
+                    f"🌡 Воздух: +{d['t_min']}°...+{d['t_max']}°C\n"
+                    f"{water_line}"
+                    f"💨 Ветер: {d['wind_dir_str']}, {wind} м/с (порывы {gusts} м/с) {_wind_dot(wind)}\n"
+                    f"🌊 Волна: {wave} м {_wave_dot(wave)}\n"
+                    f"{swell_line}"
+                    f"{rain_line}\n"
+                    f"{_sup_recommendations(d)}"
+                )
+                if i == 0 and len(days) > 1:
+                    lines.append("")  # разрыв между днями
+
+            else:
+                # ── Компактная строка для заливов ──
+                lines.append(
+                    f"  📅 *{_date_label(d['date'])}*:  "
+                    f"💨 {d['wind_dir_str']} {wind} м/с {_wind_dot(wind)}  |  "
+                    f"🌊 {wave} м {_wave_dot(wave)}"
+                )
+
+        if is_main:
             lines.append("\n" + "━" * 16)
 
-    sources = days[0].get("sources", []) if days else []
-    if sources:
-        lines.append(f"\n_Данные: {' + '.join(sources)}_")
+    # Источники данных
+    sources = location_data[0]["days"][0].get("sources", ["Open-Meteo"]) if location_data[0]["days"] else ["Open-Meteo"]
+    lines.append(f"\n_Данные: {' + '.join(sources)}_")
     lines.append("_⚠️ Прогноз приблизительный. Перед выходом проверяйте актуальную погоду._")
+
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -1094,20 +1337,30 @@ def main():
         allow_reentry=True, per_message=False,
     )
 
-    # Диалог: Отзыв
+    # Диалог: Отзыв (добавлен шаг REVIEW_PARTICIPANTS)
     review_conv = ConversationHandler(
         entry_points=[
             CommandHandler("review", review_start),
             MessageHandler(filters.Text(["📸 Отзыв"]), review_start),
         ],
         states={
-            REVIEW_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)],
-            REVIEW_AUTHOR:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)],
+            REVIEW_COMMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)
+            ],
+            REVIEW_AUTHOR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)
+            ],
+            REVIEW_PARTICIPANTS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_participants),
+                CallbackQueryHandler(skip_participants_cb, pattern="^skip_participants$"),
+            ],
             REVIEW_MEDIA: [
                 MessageHandler(filters.PHOTO | filters.VIDEO, get_review_media),
                 CallbackQueryHandler(review_done, pattern="^review_done$"),
             ],
-            REVIEW_CONFIRM: [CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")],
+            REVIEW_CONFIRM: [
+                CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")
+            ],
         },
         fallbacks=[CommandHandler("review", review_start)],
         allow_reentry=True, per_message=False,
@@ -1136,20 +1389,24 @@ def main():
     app.add_handler(news_conv)
 
     # Кнопки меню → команды
-    app.add_handler(MessageHandler(filters.Text(["🌤 Погода"]),           weather))
-    app.add_handler(MessageHandler(filters.Text(["📅 Расписание"]),       schedule_cmd))
-    app.add_handler(MessageHandler(filters.Text(["🏆 Рейтинг"]),          top))
-    app.add_handler(MessageHandler(filters.Text(["🎰 Колесо фортуны"]),   spin))
+    app.add_handler(MessageHandler(filters.Text(["🌤 Погода"]),          weather))
+    app.add_handler(MessageHandler(filters.Text(["📅 Расписание"]),      schedule_cmd))
+    app.add_handler(MessageHandler(filters.Text(["🏆 Рейтинг"]),         top))
+    app.add_handler(MessageHandler(filters.Text(["🎰 Колесо фортуны"]),  spin))
 
-    # Команды
-    app.add_handler(CommandHandler("menu",      menu))
-    app.add_handler(CommandHandler("schedule",  schedule_cmd))
-    app.add_handler(CommandHandler("weather",   weather))
-    app.add_handler(CommandHandler("top",       top))
-    app.add_handler(CommandHandler("rank",      rank))
-    app.add_handler(CommandHandler("addpoints", addpoints))
-    app.add_handler(CommandHandler("backup",    backup))
-    app.add_handler(CommandHandler("spin",      spin))
+    # Команды пользователей
+    app.add_handler(CommandHandler("menu",     menu))
+    app.add_handler(CommandHandler("schedule", schedule_cmd))
+    app.add_handler(CommandHandler("weather",  weather))
+    app.add_handler(CommandHandler("top",      top))
+    app.add_handler(CommandHandler("rank",     rank))
+    app.add_handler(CommandHandler("spin",     spin))
+
+    # Команды администратора
+    app.add_handler(CommandHandler("addpoints",      addpoints))
+    app.add_handler(CommandHandler("backup",         backup))
+    app.add_handler(CommandHandler("schedulebackup", schedulebackup))
+    app.add_handler(CommandHandler("addschedule",    addschedule))
 
     # Модерация
     app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
