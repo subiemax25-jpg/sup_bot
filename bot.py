@@ -735,21 +735,44 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "participants": participants,
     }
 
-    await _send_media_group(ctx, ADMIN_ID, media, caption=f"💬 {comment}")
-    parts_hint = f"\n👥 Участники: {participants}" if participants else ""
-    caption_preview = _build_review_caption(comment, author_info, participants)
-    split_note = "\n\n⚠️ _Длинный отзыв — выйдет двумя постами в канале_" if len(caption_preview) > CAPTION_LIMIT else ""
-    mod_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
-        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
-    ]])
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
-        f"💬 {_escape_md(comment)}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}"
-        f"{split_note}\n\n{'─'*28}\nОпубликовать в канал?",
-        parse_mode="Markdown",
-        reply_markup=mod_keyboard)
+    try:
+        # Подпись к медиа у администратора — всегда короткая (лимит 1024 символа)
+        await _send_media_group(ctx, ADMIN_ID, media, caption="📸 Медиа из отзыва")
+
+        # Текстовое сообщение с кнопками модерации
+        parts_hint = f"\n👥 Участники: {participants}" if participants else ""
+        caption_preview = _build_review_caption(comment, author_info, participants)
+        split_note = "\n\n⚠️ _Длинный отзыв — выйдет двумя постами в канале_" if len(caption_preview) > CAPTION_LIMIT else ""
+
+        # Если комментарий очень длинный — показываем обрезанную версию администратору
+        # (полный текст уйдёт в канал при публикации)
+        ADMIN_COMMENT_LIMIT = 800
+        if len(comment) > ADMIN_COMMENT_LIMIT:
+            comment_display = _escape_md(comment[:ADMIN_COMMENT_LIMIT]) + f"…\n_(показано {ADMIN_COMMENT_LIMIT} из {len(comment)} символов)_"
+        else:
+            comment_display = _escape_md(comment)
+
+        mod_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
+            InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
+        ]])
+        await ctx.bot.send_message(
+            ADMIN_ID,
+            f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
+            f"💬 {comment_display}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}"
+            f"{split_note}\n\n{'─'*28}\nОпубликовать в канал?",
+            parse_mode="Markdown",
+            reply_markup=mod_keyboard)
+    except Exception as e:
+        logger.error(f"confirm_review send to admin failed: {e}")
+        # Убираем из pending чтобы пользователь мог попробовать ещё раз
+        ctx.bot_data.get("pending", {}).pop(f"review_{author.id}", None)
+        await q.edit_message_text(
+            "⚠️ *Не удалось отправить отзыв на проверку.*\n\n"
+            "Попробуй ещё раз — нажми 📸 Отзыв",
+            parse_mode="Markdown")
+        return ConversationHandler.END
+
     await q.edit_message_text(
         "⏳ *Отзыв отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
         parse_mode="Markdown")
