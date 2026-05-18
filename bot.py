@@ -688,16 +688,6 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⚠️ Пришли хотя бы один файл, а потом нажми «Готово».")
         return REVIEW_MEDIA
 
-    caption    = _build_review_caption(comment, author, participants)
-    will_split = len(caption) > CAPTION_LIMIT
-    if will_split:
-        format_note = (
-            f"\n\n📝 _Текст длинный ({len(comment)} симв.) — выйдет двумя постами:_\n"
-            "_1️⃣ Текст отзыва   2️⃣ Фото/видео_"
-        )
-    else:
-        format_note = f"\n\n📝 _{len(comment)} симв. — выйдет одним постом_"
-
     parts_line = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Отправить на проверку", callback_data="review_submit"),
@@ -707,8 +697,7 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"*Твой отзыв:*\n\n"
         f"💬 {_escape_md(comment)}\n\n"
         f"Отзыв оставил: {_escape_md(author)}{parts_line}\n"
-        f"📎 Файлов: {len(media)}"
-        f"{format_note}",
+        f"📎 Файлов: {len(media)}",
         parse_mode="Markdown",
         reply_markup=keyboard)
     return REVIEW_CONFIRM
@@ -735,44 +724,19 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "participants": participants,
     }
 
-    try:
-        # Подпись к медиа у администратора — всегда короткая (лимит 1024 символа)
-        await _send_media_group(ctx, ADMIN_ID, media, caption="📸 Медиа из отзыва")
-
-        # Текстовое сообщение с кнопками модерации
-        parts_hint = f"\n👥 Участники: {participants}" if participants else ""
-        caption_preview = _build_review_caption(comment, author_info, participants)
-        split_note = "\n\n⚠️ _Длинный отзыв — выйдет двумя постами в канале_" if len(caption_preview) > CAPTION_LIMIT else ""
-
-        # Если комментарий очень длинный — показываем обрезанную версию администратору
-        # (полный текст уйдёт в канал при публикации)
-        ADMIN_COMMENT_LIMIT = 800
-        if len(comment) > ADMIN_COMMENT_LIMIT:
-            comment_display = _escape_md(comment[:ADMIN_COMMENT_LIMIT]) + f"…\n_(показано {ADMIN_COMMENT_LIMIT} из {len(comment)} символов)_"
-        else:
-            comment_display = _escape_md(comment)
-
-        mod_keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
-            InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
-        ]])
-        await ctx.bot.send_message(
-            ADMIN_ID,
-            f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
-            f"💬 {comment_display}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}"
-            f"{split_note}\n\n{'─'*28}\nОпубликовать в канал?",
-            parse_mode="Markdown",
-            reply_markup=mod_keyboard)
-    except Exception as e:
-        logger.error(f"confirm_review send to admin failed: {e}")
-        # Убираем из pending чтобы пользователь мог попробовать ещё раз
-        ctx.bot_data.get("pending", {}).pop(f"review_{author.id}", None)
-        await q.edit_message_text(
-            "⚠️ *Не удалось отправить отзыв на проверку.*\n\n"
-            "Попробуй ещё раз — нажми 📸 Отзыв",
-            parse_mode="Markdown")
-        return ConversationHandler.END
-
+    await _send_media_group(ctx, ADMIN_ID, media, caption=f"💬 {comment}")
+    parts_hint = f"\n👥 Участники: {participants}" if participants else ""
+    mod_keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
+        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
+    ]])
+    await ctx.bot.send_message(
+        ADMIN_ID,
+        f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
+        f"💬 {_escape_md(comment)}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}\n\n"
+        f"{'─'*28}\nОпубликовать в канал?",
+        parse_mode="Markdown",
+        reply_markup=mod_keyboard)
     await q.edit_message_text(
         "⏳ *Отзыв отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
         parse_mode="Markdown")
@@ -789,19 +753,6 @@ async def _send_media_group(ctx, chat_id, media, caption=""):
         else:
             items.append(InputMediaVideo(media=item["file_id"], caption=cap, parse_mode="Markdown"))
     await ctx.bot.send_media_group(chat_id=chat_id, media=items)
-
-def _build_review_caption(comment: str, author: str, participants: str) -> str:
-    """Собирает финальный текст отзыва для публикации в канале."""
-    parts_line = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
-    return (
-        f"🌊 *Впечатления от прогулки*\n\n"
-        f"💬 {_escape_md(comment)}\n\n"
-        f"Отзыв оставил: {_escape_md(author)}{parts_line}\n\n"
-        f"#сап #отзыв #впечатления"
-    )
-
-# Лимит Telegram на подпись к медиа-группе
-CAPTION_LIMIT = 1024
 
 
 # ══════════════════════════════════════════════════════
@@ -932,18 +883,15 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule.append(post_data["schedule_entry"])
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif ptype == "review":
-                caption = _build_review_caption(
-                    post_data["comment"],
-                    post_data["author"],
-                    post_data.get("participants", ""),
+                participants = post_data.get("participants", "")
+                parts_line   = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
+                caption = (
+                    f"🌊 *Впечатления от прогулки*\n\n"
+                    f"💬 {_escape_md(post_data['comment'])}\n\n"
+                    f"Отзыв оставил: {_escape_md(post_data['author'])}{parts_line}\n\n"
+                    f"#сап #отзыв #впечатления"
                 )
-                if len(caption) <= CAPTION_LIMIT:
-                    # Короткий отзыв — один пост: альбом с подписью
-                    await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
-                else:
-                    # Длинный отзыв — два поста: сначала текст, потом альбом
-                    await ctx.bot.send_message(CHANNEL_ID, text=caption, parse_mode="Markdown")
-                    await _send_media_group(ctx, CHANNEL_ID, post_data["media"])
+                await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
             elif ptype == "news":
                 if post_data["photo_id"]:
                     await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
