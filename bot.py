@@ -688,6 +688,16 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⚠️ Пришли хотя бы один файл, а потом нажми «Готово».")
         return REVIEW_MEDIA
 
+    caption    = _build_review_caption(comment, author, participants)
+    will_split = len(caption) > CAPTION_LIMIT
+    if will_split:
+        format_note = (
+            f"\n\n📝 _Текст длинный ({len(comment)} симв.) — выйдет двумя постами:_\n"
+            "_1️⃣ Текст отзыва   2️⃣ Фото/видео_"
+        )
+    else:
+        format_note = f"\n\n📝 _{len(comment)} симв. — выйдет одним постом_"
+
     parts_line = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Отправить на проверку", callback_data="review_submit"),
@@ -697,7 +707,8 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"*Твой отзыв:*\n\n"
         f"💬 {_escape_md(comment)}\n\n"
         f"Отзыв оставил: {_escape_md(author)}{parts_line}\n"
-        f"📎 Файлов: {len(media)}",
+        f"📎 Файлов: {len(media)}"
+        f"{format_note}",
         parse_mode="Markdown",
         reply_markup=keyboard)
     return REVIEW_CONFIRM
@@ -724,19 +735,44 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "participants": participants,
     }
 
-    await _send_media_group(ctx, ADMIN_ID, media, caption=f"💬 {comment}")
-    parts_hint = f"\n👥 Участники: {participants}" if participants else ""
-    mod_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
-        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
-    ]])
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
-        f"💬 {_escape_md(comment)}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}\n\n"
-        f"{'─'*28}\nОпубликовать в канал?",
-        parse_mode="Markdown",
-        reply_markup=mod_keyboard)
+    try:
+        # Подпись к медиа у администратора — всегда короткая (лимит 1024 символа)
+        await _send_media_group(ctx, ADMIN_ID, media, caption="📸 Медиа из отзыва")
+
+        # Текстовое сообщение с кнопками модерации
+        parts_hint = f"\n👥 Участники: {participants}" if participants else ""
+        caption_preview = _build_review_caption(comment, author_info, participants)
+        split_note = "\n\n⚠️ _Длинный отзыв — выйдет двумя постами в канале_" if len(caption_preview) > CAPTION_LIMIT else ""
+
+        # Если комментарий очень длинный — показываем обрезанную версию администратору
+        # (полный текст уйдёт в канал при публикации)
+        ADMIN_COMMENT_LIMIT = 800
+        if len(comment) > ADMIN_COMMENT_LIMIT:
+            comment_display = _escape_md(comment[:ADMIN_COMMENT_LIMIT]) + f"…\n_(показано {ADMIN_COMMENT_LIMIT} из {len(comment)} символов)_"
+        else:
+            comment_display = _escape_md(comment)
+
+        mod_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:review_{author.id}"),
+            InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:review_{author.id}"),
+        ]])
+        await ctx.bot.send_message(
+            ADMIN_ID,
+            f"📸 *Новый отзыв от* {_escape_md(author_info)}\n{'─'*28}\n\n"
+            f"💬 {comment_display}{_escape_md(parts_hint)}\n📎 Файлов: {len(media)}"
+            f"{split_note}\n\n{'─'*28}\nОпубликовать в канал?",
+            parse_mode="Markdown",
+            reply_markup=mod_keyboard)
+    except Exception as e:
+        logger.error(f"confirm_review send to admin failed: {e}")
+        # Убираем из pending чтобы пользователь мог попробовать ещё раз
+        ctx.bot_data.get("pending", {}).pop(f"review_{author.id}", None)
+        await q.edit_message_text(
+            "⚠️ *Не удалось отправить отзыв на проверку.*\n\n"
+            "Попробуй ещё раз — нажми 📸 Отзыв",
+            parse_mode="Markdown")
+        return ConversationHandler.END
+
     await q.edit_message_text(
         "⏳ *Отзыв отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
         parse_mode="Markdown")
@@ -753,6 +789,26 @@ async def _send_media_group(ctx, chat_id, media, caption=""):
         else:
             items.append(InputMediaVideo(media=item["file_id"], caption=cap, parse_mode="Markdown"))
     await ctx.bot.send_media_group(chat_id=chat_id, media=items)
+
+def _build_review_caption(comment: str, author: str, participants: str) -> str:
+    """Собирает финальный текст отзыва для публикации в канале."""
+    parts_line = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
+    return (
+        f"🌊 *Впечатления от прогулки*\n\n"
+        f"💬 {_escape_md(comment)}\n\n"
+        f"Отзыв оставил: {_escape_md(author)}{parts_line}\n\n"
+        f"#сап #отзыв #впечатления"
+    )
+
+# Лимит Telegram на подпись к медиа-группе
+CAPTION_LIMIT = 1024
+
+# Тексты кнопок постоянного меню — нельзя допускать их захват диалогами
+MENU_TEXTS = [
+    "📝 Анонс", "📸 Отзыв", "🌤 Погода",
+    "📰 Новость", "📅 Расписание", "🏆 Рейтинг", "🎰 Колесо фортуны",
+]
+_not_menu = ~filters.Text(MENU_TEXTS)
 
 
 # ══════════════════════════════════════════════════════
@@ -883,15 +939,18 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule.append(post_data["schedule_entry"])
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif ptype == "review":
-                participants = post_data.get("participants", "")
-                parts_line   = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
-                caption = (
-                    f"🌊 *Впечатления от прогулки*\n\n"
-                    f"💬 {_escape_md(post_data['comment'])}\n\n"
-                    f"Отзыв оставил: {_escape_md(post_data['author'])}{parts_line}\n\n"
-                    f"#сап #отзыв #впечатления"
+                caption = _build_review_caption(
+                    post_data["comment"],
+                    post_data["author"],
+                    post_data.get("participants", ""),
                 )
-                await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
+                if len(caption) <= CAPTION_LIMIT:
+                    # Короткий отзыв — один пост: альбом с подписью
+                    await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
+                else:
+                    # Длинный отзыв — два поста: сначала текст, потом альбом
+                    await ctx.bot.send_message(CHANNEL_ID, text=caption, parse_mode="Markdown")
+                    await _send_media_group(ctx, CHANNEL_ID, post_data["media"])
             elif ptype == "news":
                 if post_data["photo_id"]:
                     await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
@@ -1306,6 +1365,32 @@ async def spin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
+#  ПРЕРЫВАНИЕ ДИАЛОГА КНОПКОЙ МЕНЮ
+# ══════════════════════════════════════════════════════
+
+async def _menu_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Вызывается когда пользователь нажимает кнопку меню во время активного диалога.
+    Завершает текущий диалог и сразу выполняет нужное действие.
+    Для диалоговых функций (Анонс/Отзыв/Новость) просит нажать кнопку ещё раз,
+    т.к. запустить новый диалог изнутри fallback невозможно.
+    """
+    ctx.user_data.clear()
+    text = update.message.text
+    if   text == "🌤 Погода":         await weather(update, ctx)
+    elif text == "📅 Расписание":     await schedule_cmd(update, ctx)
+    elif text == "🏆 Рейтинг":        await top(update, ctx)
+    elif text == "🎰 Колесо фортуны": await spin(update, ctx)
+    else:
+        # Анонс / Отзыв / Новость — диалоги, нельзя стартовать внутри fallback
+        await update.message.reply_text(
+            "↩️ Предыдущее действие отменено.\n\nНажми кнопку ещё раз 👆",
+            reply_markup=_main_keyboard(),
+        )
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════════
 #  ЗАПУСК
 # ══════════════════════════════════════════════════════
 
@@ -1320,20 +1405,23 @@ def main():
             MessageHandler(filters.Text(["📝 Анонс"]), start),
         ],
         states={
-            DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
-            LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_location)],
-            TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_time)],
-            ROUTE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, get_route)],
-            DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_duration)],
+            DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_date)],
+            LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_location)],
+            TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_time)],
+            ROUTE:    [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_route)],
+            DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_duration)],
             LEVEL:    [CallbackQueryHandler(get_level, pattern="^level_")],
-            CONTACT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
+            CONTACT:  [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_contact)],
             PHOTO: [
                 CallbackQueryHandler(photo_choice, pattern="^(add_photo|skip_photo)$"),
                 MessageHandler(filters.PHOTO, get_announce_photo),
             ],
             CONFIRM: [CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
+        ],
         allow_reentry=True, per_message=False,
     )
 
@@ -1345,13 +1433,13 @@ def main():
         ],
         states={
             REVIEW_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_comment)
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_review_comment)
             ],
             REVIEW_AUTHOR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_author)
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_review_author)
             ],
             REVIEW_PARTICIPANTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_participants),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_review_participants),
                 CallbackQueryHandler(skip_participants_cb, pattern="^skip_participants$"),
             ],
             REVIEW_MEDIA: [
@@ -1362,7 +1450,10 @@ def main():
                 CallbackQueryHandler(confirm_review, pattern="^review_(submit|restart)$")
             ],
         },
-        fallbacks=[CommandHandler("review", review_start)],
+        fallbacks=[
+            CommandHandler("review", review_start),
+            MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
+        ],
         allow_reentry=True, per_message=False,
     )
 
@@ -1373,14 +1464,17 @@ def main():
             MessageHandler(filters.Text(["📰 Новость"]), news_start),
         ],
         states={
-            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, news_get_text)],
+            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, news_get_text)],
             NEWS_PHOTO: [
                 CallbackQueryHandler(news_photo_choice, pattern="^news_(add_photo|skip_photo)$"),
                 MessageHandler(filters.PHOTO, news_get_photo),
             ],
             NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
         },
-        fallbacks=[CommandHandler("news", news_start)],
+        fallbacks=[
+            CommandHandler("news", news_start),
+            MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
+        ],
         allow_reentry=True, per_message=False,
     )
 
