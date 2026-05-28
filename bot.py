@@ -15,6 +15,7 @@ import asyncio
 import aiohttp
 import math
 import random
+import re
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from telegram import (
@@ -124,6 +125,51 @@ def _deg_to_compass(deg: float) -> str:
     dirs = ["С", "ССВ", "СВ", "ВСВ", "В", "ВЮВ", "ЮВ", "ЮЮВ",
             "Ю", "ЮЮЗ", "ЮЗ", "ЗЮЗ", "З", "ЗСЗ", "СЗ", "ССЗ"]
     return dirs[round(deg / 22.5) % 16]
+
+def _wind_arrow(deg: float) -> str:
+    """Стрелка показывает куда дует ветер (не откуда он приходит).
+    С (0°) — дует на юг → ↓,  Ю (180°) — дует на север → ↑ и т.д."""
+    arrows = ["↓","↙","↙","←","←","←","↖","↑","↑","↗","↗","→","→","→","↘","↓"]
+    return arrows[round(deg / 22.5) % 16]
+
+# Словарь для парсинга русских дат в расписании
+_MONTH_MAP = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+
+def _parse_schedule_date(date_str: str):
+    """Пытается распознать дату из строки вида 'суббота, 14 июня' или '14 июня'.
+    Возвращает объект date или None."""
+    today = date.today()
+    text  = date_str.lower()
+    for month_name, month_num in _MONTH_MAP.items():
+        m = re.search(r'(\d{1,2})\s+' + month_name, text)
+        if m:
+            day = int(m.group(1))
+            year = today.year
+            try:
+                d = date(year, month_num, day)
+                # Если дата сильно в прошлом — пробуем следующий год
+                if (today - d).days > 180:
+                    d = date(year + 1, month_num, day)
+                return d
+            except ValueError:
+                pass
+    # Формат DD.MM или DD/MM
+    m = re.search(r'(\d{1,2})[./](\d{1,2})', text)
+    if m:
+        day, month_num = int(m.group(1)), int(m.group(2))
+        year = today.year
+        try:
+            d = date(year, month_num, day)
+            if (today - d).days > 180:
+                d = date(year + 1, month_num, day)
+            return d
+        except ValueError:
+            pass
+    return None
 
 def _wmo_icon(code: int) -> str:
     if code == 0:  return "☀️"
@@ -936,7 +982,8 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     await ctx.bot.send_message(CHANNEL_ID, text=post_data["text"], parse_mode="Markdown")
                 schedule = ctx.bot_data.setdefault("schedule", [])
-                schedule.append(post_data["schedule_entry"])
+                entry = {**post_data["schedule_entry"], "added_at": datetime.now(VLAD_TZ).isoformat()}
+                schedule.append(entry)
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif ptype == "review":
                 caption = _build_review_caption(
@@ -989,7 +1036,33 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════
 
 async def schedule_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    entries = ctx.bot_data.get("schedule", [])
+    all_entries = ctx.bot_data.get("schedule", [])
+    today = date.today()
+
+    # Фильтруем прошедшие прогулки
+    entries = []
+    for e in all_entries:
+        walk_date = _parse_schedule_date(e.get("date", ""))
+        if walk_date is not None:
+            # Дата распозналась: показываем только будущие и сегодняшние
+            if walk_date >= today:
+                entries.append(e)
+        else:
+            # Дата не распозналась — используем added_at как запасной вариант
+            added_at = e.get("added_at")
+            if added_at:
+                try:
+                    added = datetime.fromisoformat(added_at).date()
+                    if (today - added).days <= 30:
+                        entries.append(e)
+                except Exception:
+                    entries.append(e)  # если added_at не парсится — оставляем
+            else:
+                entries.append(e)  # старые записи без added_at — оставляем
+
+    # Обновляем список в bot_data (убираем устаревшие)
+    ctx.bot_data["schedule"] = entries
+
     if not entries:
         await update.message.reply_text(
             "📭 *Ближайших прогулок пока нет.*\n\nСоздай анонс через 📝 Анонс 🏄‍♂️",
@@ -1028,21 +1101,23 @@ async def schedulebackup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     fields = ["date", "time", "location", "route", "duration", "level", "contact"]
     lines  = [
-        "📋 *Резервная копия расписания*\n"
-        "_(скопируй и сохрани, отправь после деплоя по одной команде)_\n"
+        "📋 Резервная копия расписания\n"
+        "(скопируй и сохрани, отправь после деплоя по одной команде)\n"
     ]
     for e in schedule:
-        parts   = [str(e.get(k, "")).replace("|", "/") for k in fields]  # | — разделитель
+        parts   = [str(e.get(k, "")).replace("|", "/") for k in fields]
+        # Добавляем added_at как 8-й элемент, если есть
+        parts.append(e.get("added_at", ""))
         encoded = "|".join(parts)
         lines.append(f"/addschedule {encoded}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines))
 
 
 async def addschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Только для администратора.
     Добавляет запись в расписание из строки-бэкапа.
-    Формат: /addschedule дата|время|место|маршрут|длительность|уровень|контакт
+    Формат: /addschedule дата|время|место|маршрут|длительность|уровень|контакт[|added_at]
     """
     if update.effective_user.id != ADMIN_ID:
         return
@@ -1058,12 +1133,17 @@ async def addschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts = raw.split("|")
     if len(parts) < 7:
         await update.message.reply_text(
-            f"⚠️ Нужно 7 полей через `|`, получено {len(parts)}.\n"
+            f"⚠️ Нужно минимум 7 полей через `|`, получено {len(parts)}.\n"
             "Формат: дата|время|место|маршрут|длительность|уровень|контакт",
             parse_mode="Markdown")
         return
     keys  = ["date", "time", "location", "route", "duration", "level", "contact"]
     entry = {k: parts[i].strip() for i, k in enumerate(keys)}
+    # Восстанавливаем added_at если он был в бэкапе (8-й элемент)
+    if len(parts) >= 8 and parts[7].strip():
+        entry["added_at"] = parts[7].strip()
+    else:
+        entry["added_at"] = datetime.now(VLAD_TZ).isoformat()
     schedule = ctx.bot_data.setdefault("schedule", [])
     schedule.append(entry)
     ctx.bot_data["schedule"] = schedule[-20:]
@@ -1129,7 +1209,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"\n📅 *{_date_label(d['date'])}* {d['icon']}\n"
                     f"🌡 Воздух: +{d['t_min']}°...+{d['t_max']}°C\n"
                     f"{water_line}"
-                    f"💨 Ветер: {d['wind_dir_str']}, {wind} м/с (порывы {gusts} м/с) {_wind_dot(wind)}\n"
+                    f"💨 Ветер: {d['wind_dir_str']} {_wind_arrow(d['wind_dir'])}, {wind} м/с (порывы {gusts} м/с) {_wind_dot(wind)}\n"
                     f"🌊 Волна: {wave} м {_wave_dot(wave)}\n"
                     f"{swell_line}"
                     f"{rain_line}\n"
@@ -1142,7 +1222,7 @@ async def weather(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 # ── Компактная строка для заливов ──
                 lines.append(
                     f"  📅 *{_date_label(d['date'])}*:  "
-                    f"💨 {d['wind_dir_str']} {wind} м/с {_wind_dot(wind)}  |  "
+                    f"💨 {d['wind_dir_str']} {_wind_arrow(d['wind_dir'])} {wind} м/с {_wind_dot(wind)}  |  "
                     f"🌊 {wave} м {_wave_dot(wave)}"
                 )
 
@@ -1179,8 +1259,8 @@ async def top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{medal} {_get_rank(pts)} @{_escape_md(username)} — {pts} {_pts_word(pts)}")
     lines.append(
         "\n_🪸 За отзыв о прогулке — 2 очка_\n_🦀 За опубликованный анонс — 1 очко_\n\n"
-        "*Звания:*\n_🪸 1\\-2 прогулки — Планктон_\n_🦀 3\\-5 прогулок — Баклан_\n"
-        "_🐙 6\\-10 прогулок — Ларга_\n_🦈 11\\-20 прогулок — Кракен_\n_🔱 21\\+ прогулок — Посейдон_"
+        "*Звания:*\n_🪸 1-2 прогулки — Планктон_\n_🦀 3-5 прогулок — Баклан_\n"
+        "_🐙 6-10 прогулок — Ларга_\n_🦈 11-20 прогулок — Кракен_\n_🔱 21+ прогулок — Посейдон_"
     )
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -1249,10 +1329,10 @@ async def backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ratings:
         await update.message.reply_text("📊 Рейтинг пуст — нечего сохранять.")
         return
-    lines = ["📋 *Резервная копия рейтинга*\n_(скопируй и сохрани)_\n"]
+    lines = ["📋 Резервная копия рейтинга\n(скопируй и сохрани, отправь команды по одной после деплоя)\n"]
     for username, data in sorted(ratings.items(), key=lambda x: x[1]["points"], reverse=True):
         lines.append(f"/addpoints {username} {data['points']}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines))
 
 async def year_end_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(VLAD_TZ)
