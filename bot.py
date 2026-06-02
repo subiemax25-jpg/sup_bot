@@ -528,9 +528,10 @@ async def get_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["duration"] = update.message.text.strip()
     keyboard = [
-        [InlineKeyboardButton("🐣 Для новичков", callback_data="level_beginner")],
-        [InlineKeyboardButton("🏄 Все уровни",   callback_data="level_all")],
-        [InlineKeyboardButton("💪 Опытные",       callback_data="level_advanced")],
+        [InlineKeyboardButton("🐣 Для новичков",  callback_data="level_beginner")],
+        [InlineKeyboardButton("🦆 Уже не тонем",  callback_data="level_middle")],
+        [InlineKeyboardButton("💪 Опытные",        callback_data="level_advanced")],
+        [InlineKeyboardButton("🏄 Все уровни",    callback_data="level_all")],
     ]
     await update.message.reply_text(
         "🎯 *Уровень подготовки?*",
@@ -543,6 +544,7 @@ async def get_level(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     levels = {
         "level_beginner": "🐣 Для новичков",
+        "level_middle":   "🦆 Уже не тонем",
         "level_all":      "🏄 Все уровни",
         "level_advanced": "💪 Опытные",
     }
@@ -976,13 +978,28 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             ptype = post_data["type"]
             if ptype == "announce":
+                # Клавиатура «Присоединиться» — публикуем вместе с постом
+                join_keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🙋 Присоединиться (0)", callback_data="join:join"),
+                ]])
                 if post_data["photo_id"]:
-                    await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
-                                             caption=post_data["text"], parse_mode="Markdown")
+                    sent = await ctx.bot.send_photo(
+                        CHANNEL_ID, photo=post_data["photo_id"],
+                        caption=post_data["text"], parse_mode="Markdown",
+                        reply_markup=join_keyboard)
                 else:
-                    await ctx.bot.send_message(CHANNEL_ID, text=post_data["text"], parse_mode="Markdown")
+                    sent = await ctx.bot.send_message(
+                        CHANNEL_ID, text=post_data["text"], parse_mode="Markdown",
+                        reply_markup=join_keyboard)
+                # Сохраняем данные об участниках, привязанные к message_id
+                joins = ctx.bot_data.setdefault("joins", {})
+                joins[str(sent.message_id)] = []   # список {"user_id": ..., "name": ...}
                 schedule = ctx.bot_data.setdefault("schedule", [])
-                entry = {**post_data["schedule_entry"], "added_at": datetime.now(VLAD_TZ).isoformat()}
+                entry = {
+                    **post_data["schedule_entry"],
+                    "added_at":  datetime.now(VLAD_TZ).isoformat(),
+                    "message_id": str(sent.message_id),
+                }
                 schedule.append(entry)
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif ptype == "review":
@@ -1029,6 +1046,87 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown")
         except Exception:
             pass
+
+
+
+# ══════════════════════════════════════════════════════
+#  КНОПКА «ПРИСОЕДИНИТЬСЯ» К ПРОГУЛКЕ
+# ══════════════════════════════════════════════════════
+
+def _join_keyboard(msg_id: str, count: int) -> InlineKeyboardMarkup:
+    """Строит клавиатуру под анонсом: кнопка Присоединиться + кнопка Участники (если есть)."""
+    row = [InlineKeyboardButton(
+        f"🙋 Присоединиться ({count})", callback_data=f"join:{msg_id}"
+    )]
+    if count > 0:
+        row.append(InlineKeyboardButton(
+            f"👥 Участники", callback_data=f"joinlist:{msg_id}"
+        ))
+    return InlineKeyboardMarkup([row])
+
+
+async def join_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает нажатие «🙋 Присоединиться».
+    Первое нажатие — добавляет пользователя.
+    Повторное — убирает (toggle).
+    Работает в канале: callback_query приходит от любого подписчика.
+    """
+    q = update.callback_query
+    # Не отвечаем show_alert сразу — чтобы не тормозить
+    msg_id  = q.data.split(":", 1)[1]
+
+    # msg_id при первичной публикации хранится буквально как str(sent.message_id).
+    # Но при нажатии q.message.message_id может быть int — приводим к str.
+    if msg_id == "join":
+        # fallback: старые записи без message_id в callback_data
+        msg_id = str(q.message.message_id)
+
+    joins     = ctx.bot_data.setdefault("joins", {})
+    attendees = joins.setdefault(msg_id, [])
+
+    user      = q.from_user
+    user_id   = user.id
+    # Имя для отображения
+    if user.username:
+        display = f"@{user.username}"
+    elif user.first_name:
+        display = user.first_name + (f" {user.last_name}" if user.last_name else "")
+    else:
+        display = f"id:{user_id}"
+
+    # Toggle: если уже в списке — убираем, иначе добавляем
+    existing = next((a for a in attendees if a["user_id"] == user_id), None)
+    if existing:
+        attendees.remove(existing)
+        await q.answer("Ты убран из списка участников.", show_alert=False)
+    else:
+        attendees.append({"user_id": user_id, "name": display})
+        await q.answer("Ты добавлен в список участников! 🙌", show_alert=False)
+
+    count = len(attendees)
+    try:
+        await q.edit_message_reply_markup(reply_markup=_join_keyboard(msg_id, count))
+    except Exception:
+        pass   # Если сообщение не изменилось — молча игнорируем
+
+
+async def joinlist_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Показывает список участников всплывающим окном."""
+    q      = update.callback_query
+    msg_id = q.data.split(":", 1)[1]
+    joins  = ctx.bot_data.get("joins", {})
+    attendees = joins.get(msg_id, [])
+
+    if not attendees:
+        await q.answer("Список участников пуст.", show_alert=True)
+        return
+
+    names = "\n".join(f"{i+1}. {a['name']}" for i, a in enumerate(attendees))
+    await q.answer(
+        f"👥 Участники ({len(attendees)}):\n\n{names}",
+        show_alert=True
+    )
 
 
 # ══════════════════════════════════════════════════════
@@ -1151,6 +1249,108 @@ async def addschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✅ Добавлено в расписание:\n"
         f"📅 {entry['date']} | ⏰ {entry['time']}\n"
         f"📍 {entry['location']}"
+    )
+
+
+# ══════════════════════════════════════════════════════
+#  РУЧНОЕ УДАЛЕНИЕ АНОНСОВ ИЗ РАСПИСАНИЯ
+# ══════════════════════════════════════════════════════
+
+async def deleteschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Только для администратора.
+    /deleteschedule       — показывает список анонсов с кнопками удаления
+    /deleteschedule all   — удаляет всё расписание целиком
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    schedule = ctx.bot_data.get("schedule", [])
+    args     = ctx.args or []
+
+    if args and args[0].lower() == "all":
+        ctx.bot_data["schedule"] = []
+        await update.message.reply_text("🗑 Всё расписание очищено.")
+        return
+
+    if not schedule:
+        await update.message.reply_text("📭 Расписание пусто — удалять нечего.")
+        return
+
+    lines   = ["🗑 *Удалить анонс из расписания:*\n"]
+    buttons = []
+    for i, e in enumerate(schedule):
+        lines.append(
+            f"*{i+1}.* {_escape_md(e.get('date','?'))} | "
+            f"{_escape_md(e.get('time','?'))} | "
+            f"{_escape_md(e.get('location','?'))}"
+        )
+        buttons.append([InlineKeyboardButton(
+            f"🗑 Удалить #{i+1}", callback_data=f"delschedule:{i}"
+        )])
+    buttons.append([InlineKeyboardButton("🗑 Удалить ВСЁ", callback_data="delschedule:all")])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def deleteschedule_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопок удаления анонсов."""
+    q = update.callback_query
+    await q.answer()
+    if q.from_user.id != ADMIN_ID:
+        await q.answer("⛔ Только администратор.", show_alert=True)
+        return
+
+    val      = q.data.split(":", 1)[1]
+    schedule = ctx.bot_data.get("schedule", [])
+
+    if val == "all":
+        ctx.bot_data["schedule"] = []
+        await q.edit_message_text("🗑 Всё расписание очищено.")
+        return
+
+    try:
+        idx = int(val)
+    except ValueError:
+        await q.edit_message_text("⚠️ Ошибка: неверный индекс.")
+        return
+
+    if idx < 0 or idx >= len(schedule):
+        await q.edit_message_text("⚠️ Анонс уже удалён или не найден.")
+        return
+
+    removed  = schedule.pop(idx)
+    ctx.bot_data["schedule"] = schedule
+
+    if not schedule:
+        await q.edit_message_text(
+            f"✅ Удалено: *{_escape_md(removed.get('date','?'))}* — {_escape_md(removed.get('location','?'))}\n\n"
+            f"📭 Расписание теперь пусто.",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines   = [f"✅ Удалено: *{_escape_md(removed.get('date','?'))}* — {_escape_md(removed.get('location','?'))}\n\n"]
+    lines.append("🗑 *Оставшиеся анонсы:*\n")
+    buttons = []
+    for i, e in enumerate(schedule):
+        lines.append(
+            f"*{i+1}.* {_escape_md(e.get('date','?'))} | "
+            f"{_escape_md(e.get('time','?'))} | "
+            f"{_escape_md(e.get('location','?'))}"
+        )
+        buttons.append([InlineKeyboardButton(
+            f"🗑 Удалить #{i+1}", callback_data=f"delschedule:{i}"
+        )])
+    buttons.append([InlineKeyboardButton("🗑 Удалить ВСЁ", callback_data="delschedule:all")])
+
+    await q.edit_message_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
@@ -1581,9 +1781,15 @@ def main():
     app.add_handler(CommandHandler("backup",         backup))
     app.add_handler(CommandHandler("schedulebackup", schedulebackup))
     app.add_handler(CommandHandler("addschedule",    addschedule))
+    app.add_handler(CommandHandler("deleteschedule", deleteschedule))
 
     # Модерация
-    app.add_handler(CallbackQueryHandler(moderate, pattern="^(approve|reject):"))
+    app.add_handler(CallbackQueryHandler(moderate,          pattern="^(approve|reject):"))
+    # Удаление анонсов из расписания
+    app.add_handler(CallbackQueryHandler(deleteschedule_cb, pattern="^delschedule:"))
+    # Кнопки «Присоединиться» и «Участники» под анонсом в канале
+    app.add_handler(CallbackQueryHandler(join_cb,           pattern="^join:"))
+    app.add_handler(CallbackQueryHandler(joinlist_cb,        pattern="^joinlist:"))
 
     # Ежегодный итог
     app.job_queue.run_daily(year_end_job, time=dtime(23, 59, tzinfo=VLAD_TZ))
