@@ -486,6 +486,38 @@ async def menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════
+#  АНОНС — вспомогательные клавиатуры
+# ══════════════════════════════════════════════════════
+
+# Кнопка «Назад» для шагов с текстовым вводом
+_KB_BACK = ReplyKeyboardMarkup([["⬅️ Назад"]], resize_keyboard=True, one_time_keyboard=True)
+
+# Текст кнопки назад — выносим в константу, чтобы фильтровать в ConversationHandler
+BACK_TEXT = "⬅️ Назад"
+
+# Вопросы для каждого шага — нужны при навигации «назад»
+_STEP_QUESTIONS = {
+    DATE:     "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_",
+    LOCATION: "📍 *Место сбора?*\n_Пример: Набережная Горького, у моста (ссылка 2Gis)_",
+    TIME:     "⏰ *Время сбора?*\n_Пример: 10:00_",
+    ROUTE:    "🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно_",
+    DURATION: "🕐 *Продолжительность прогулки?*\n_Пример: 2 часа_",
+    CONTACT:  "👤 *Кто предложил прогулку?*\n_Пример: @username (телефон +7)_",
+}
+
+
+async def _ask_step(message, step: int, ctx, *, removing_kb=False):
+    """Отправляет вопрос для шага step с кнопкой «Назад» или без неё."""
+    # На шаге DATE «назад» нет — некуда идти
+    kb = ReplyKeyboardRemove() if (step == DATE or removing_kb) else _KB_BACK
+    await message.reply_text(
+        _STEP_QUESTIONS[step],
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+# ══════════════════════════════════════════════════════
 #  АНОНС
 # ══════════════════════════════════════════════════════
 
@@ -494,39 +526,63 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏄‍♂️ *Привет! Я помогу составить анонс САП-прогулки.*\n\n"
         "Отвечай на вопросы — я сформирую пост и отправлю его на проверку.\n\n"
-        "📅 *Дата прогулки?*\n_Пример: суббота, 14 июня_",
+        + _STEP_QUESTIONS[DATE],
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove())
     return DATE
 
+# ── обработчики кнопки «Назад» ──────────────────────
+
+async def back_to_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Назад с шага LOCATION → DATE."""
+    await _ask_step(update.message, DATE, ctx, removing_kb=True)
+    return DATE
+
+async def back_to_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Назад с шага TIME → LOCATION."""
+    await _ask_step(update.message, LOCATION, ctx)
+    return LOCATION
+
+async def back_to_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Назад с шага ROUTE → TIME."""
+    await _ask_step(update.message, TIME, ctx)
+    return TIME
+
+async def back_to_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Назад с шага DURATION → ROUTE."""
+    await _ask_step(update.message, ROUTE, ctx)
+    return ROUTE
+
+async def back_to_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Назад с шага CONTACT → DURATION."""
+    await _ask_step(update.message, DURATION, ctx)
+    return DURATION
+
+# ── основные шаги ────────────────────────────────────
+
 async def get_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["date"] = update.message.text.strip()
-    await update.message.reply_text(
-        "📍 *Место сбора?*\n_Пример: Набережная Горького, у моста (ссылка 2Gis)_",
-        parse_mode="Markdown")
+    await _ask_step(update.message, LOCATION, ctx)
     return LOCATION
 
 async def get_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["location"] = update.message.text.strip()
-    await update.message.reply_text("⏰ *Время сбора?*\n_Пример: 10:00_", parse_mode="Markdown")
+    await _ask_step(update.message, TIME, ctx)
     return TIME
 
 async def get_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["time"] = update.message.text.strip()
-    await update.message.reply_text(
-        "🗺 *Маршрут прогулки?*\n_Пример: вдоль набережной до острова и обратно_",
-        parse_mode="Markdown")
+    await _ask_step(update.message, ROUTE, ctx)
     return ROUTE
 
 async def get_route(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["route"] = update.message.text.strip()
-    await update.message.reply_text(
-        "🕐 *Продолжительность прогулки?*\n_Пример: 2 часа_",
-        parse_mode="Markdown")
+    await _ask_step(update.message, DURATION, ctx)
     return DURATION
 
 async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["duration"] = update.message.text.strip()
+    # После длительности — уровень (inline), убираем reply-клавиатуру
     keyboard = [
         [InlineKeyboardButton("🐣 Для новичков",  callback_data="level_beginner")],
         [InlineKeyboardButton("🦆 Уже не тонем",  callback_data="level_middle")],
@@ -536,6 +592,9 @@ async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎯 *Уровень подготовки?*",
         parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "👆 Выбери уровень:",
         reply_markup=InlineKeyboardMarkup(keyboard))
     return LEVEL
 
@@ -549,10 +608,12 @@ async def get_level(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "level_advanced": "💪 Опытные",
     }
     ctx.user_data["level"] = levels[q.data]
-    await q.edit_message_text(
-        f"Уровень: *{ctx.user_data['level']}* ✓\n\n"
-        f"👤 *Кто предложил прогулку?*\n_Пример: @username (телефон +7)_",
-        parse_mode="Markdown")
+    await q.edit_message_text(f"Уровень: *{ctx.user_data['level']}* ✓", parse_mode="Markdown")
+    # После inline-шага показываем CONTACT с кнопкой «Назад»
+    await q.message.reply_text(
+        _STEP_QUESTIONS[CONTACT],
+        parse_mode="Markdown",
+        reply_markup=_KB_BACK)
     return CONTACT
 
 async def get_contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -564,6 +625,9 @@ async def get_contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🖼 *Хочешь добавить фото к анонсу?*",
         parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "👆 Выбери:",
         reply_markup=InlineKeyboardMarkup(keyboard))
     return PHOTO
 
@@ -621,25 +685,177 @@ async def confirm_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pending[f"announce_{author.id}"] = {
         "text": post_text, "photo_id": photo_id, "type": "announce",
         "author_display": author_info,
+        "fields": {k: d.get(k, "") for k in ["date", "time", "location", "route", "duration", "level", "contact"]},
         "schedule_entry": {k: d.get(k, "") for k in ["date", "time", "location", "route", "duration", "level", "contact"]},
     }
 
-    mod_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:announce_{author.id}"),
-        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:announce_{author.id}"),
+    await _send_mod_announce(ctx, author_info, post_text, photo_id, author.id)
+    await q.edit_message_text(
+        "⏳ *Анонс отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
+        parse_mode="Markdown")
+    await ctx.bot.send_message(author.id, "Выбери действие:", reply_markup=_main_keyboard())
+    return ConversationHandler.END
+
+
+def _mod_keyboard(key: str) -> InlineKeyboardMarkup:
+    """Клавиатура модерации анонса: Опубликовать / ✏️ Редактировать / Отклонить."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Опубликовать",    callback_data=f"approve:{key}"),
+        InlineKeyboardButton("✏️ Редактировать",  callback_data=f"modedit:{key}"),
+        InlineKeyboardButton("❌ Отклонить",       callback_data=f"reject:{key}"),
     ]])
+
+
+async def _send_mod_announce(ctx, author_info: str, post_text: str, photo_id, author_id: int):
+    """Отправляет анонс администратору на модерацию."""
+    key = f"announce_{author_id}"
     if photo_id:
         await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
     await ctx.bot.send_message(
         ADMIN_ID,
         f"📬 *Новый анонс от* {_escape_md(author_info)}\n{'─'*28}\n\n{post_text}\n\n{'─'*28}\nОпубликовать в канал?",
         parse_mode="Markdown",
-        reply_markup=mod_keyboard)
+        reply_markup=_mod_keyboard(key))
+
+
+# ══════════════════════════════════════════════════════
+#  РЕДАКТИРОВАНИЕ АНОНСА НА МОДЕРАЦИИ (Вариант B)
+# ══════════════════════════════════════════════════════
+
+# Названия полей для отображения
+_FIELD_LABELS = {
+    "date":     "📅 Дата",
+    "time":     "⏰ Время сбора",
+    "location": "📍 Место сбора",
+    "route":    "🗺 Маршрут",
+    "duration": "🕐 Длительность",
+    "contact":  "👤 Кто предложил",
+}
+
+# Порядок кнопок полей
+_FIELD_ORDER = ["date", "time", "location", "route", "duration", "contact"]
+
+
+async def modedit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Админ нажал ✏️ Редактировать.
+    Показывает кнопки с названиями полей для выбора.
+    """
+    q = update.callback_query
+    await q.answer()
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    key     = q.data.split(":", 1)[1]   # "announce_123456"
+    pending = ctx.bot_data.get("pending", {})
+    if key not in pending:
+        await q.edit_message_text("⚠️ Анонс не найден — возможно уже опубликован или отклонён.")
+        return
+
+    # Сохраняем ключ текущего редактируемого анонса в admin user_data
+    ctx.user_data["modedit_key"] = key
+
+    buttons = [
+        [InlineKeyboardButton(_FIELD_LABELS[f], callback_data=f"medf:{f}")]
+        for f in _FIELD_ORDER
+    ]
+    buttons.append([InlineKeyboardButton("↩️ Назад к модерации", callback_data=f"medback:{key}")])
+
     await q.edit_message_text(
-        "⏳ *Анонс отправлен на проверку.*\nКак только одобрят — пост появится в канале. Спасибо! 🙌",
+        "✏️ *Что хочешь исправить?*\nВыбери поле:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def modedit_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Админ выбрал поле. Просим ввести новое значение."""
+    q     = update.callback_query
+    await q.answer()
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    field = q.data.split(":", 1)[1]
+    ctx.user_data["modedit_field"] = field
+    label = _FIELD_LABELS.get(field, field)
+
+    # Сохраняем message_id сообщения с кнопками, чтобы потом его обновить
+    ctx.user_data["modedit_msg_id"] = q.message.message_id
+    ctx.user_data["modedit_chat_id"] = q.message.chat_id
+
+    await q.edit_message_text(
+        f"✏️ Редактируем *{label}*\n\nВведи новое значение:",
         parse_mode="Markdown")
-    await ctx.bot.send_message(author.id, "Выбери действие:", reply_markup=_main_keyboard())
-    return ConversationHandler.END
+
+
+async def modedit_value(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Админ ввёл новое значение поля.
+    Обновляем pending, перестраиваем post_text, показываем обновлённый анонс.
+    Этот хэндлер регистрируется как глобальный MessageHandler только для ADMIN_ID.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    # Проверяем что мы действительно в режиме редактирования
+    key   = ctx.user_data.get("modedit_key")
+    field = ctx.user_data.get("modedit_field")
+    if not key or not field:
+        return
+
+    pending = ctx.bot_data.get("pending", {})
+    if key not in pending:
+        await update.message.reply_text("⚠️ Анонс не найден.")
+        ctx.user_data.pop("modedit_key", None)
+        ctx.user_data.pop("modedit_field", None)
+        return
+
+    new_val = update.message.text.strip()
+
+    # Обновляем поле
+    post_data = pending[key]
+    post_data["fields"][field]          = new_val
+    post_data["schedule_entry"][field]  = new_val
+    post_data["text"]                   = build_post(post_data["fields"])
+
+    # Сбрасываем режим редактирования
+    ctx.user_data.pop("modedit_key",     None)
+    ctx.user_data.pop("modedit_field",   None)
+    ctx.user_data.pop("modedit_msg_id",  None)
+    ctx.user_data.pop("modedit_chat_id", None)
+
+    # Показываем обновлённый анонс с кнопками модерации
+    author_info = post_data.get("author_display", "")
+    await update.message.reply_text(
+        f"✅ Поле обновлено!\n\n"
+        f"📬 *Анонс от* {_escape_md(author_info)}\n{'─'*28}\n\n"
+        f"{post_data['text']}\n\n{'─'*28}\nОпубликовать в канал?",
+        parse_mode="Markdown",
+        reply_markup=_mod_keyboard(key))
+
+
+async def modedit_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «↩️ Назад к модерации» — возвращает исходные кнопки модерации."""
+    q   = update.callback_query
+    await q.answer()
+    if q.from_user.id != ADMIN_ID:
+        return
+
+    key       = q.data.split(":", 1)[1]
+    pending   = ctx.bot_data.get("pending", {})
+    post_data = pending.get(key)
+
+    ctx.user_data.pop("modedit_key",   None)
+    ctx.user_data.pop("modedit_field", None)
+
+    if not post_data:
+        await q.edit_message_text("⚠️ Анонс не найден.")
+        return
+
+    author_info = post_data.get("author_display", "")
+    await q.edit_message_text(
+        f"📬 *Анонс от* {_escape_md(author_info)}\n{'─'*28}\n\n"
+        f"{post_data['text']}\n\n{'─'*28}\nОпубликовать в канал?",
+        parse_mode="Markdown",
+        reply_markup=_mod_keyboard(key))
 
 
 # ══════════════════════════════════════════════════════
@@ -1678,6 +1894,9 @@ def main():
     persistence = PicklePersistence(filepath="bot_data.pkl")
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
+    # Фильтр: не меню и не кнопка «Назад» — используется там где «Назад» не нужен
+    _back_filter = ~filters.Text([BACK_TEXT])
+
     # Диалог: Анонс
     announce_conv = ConversationHandler(
         entry_points=[
@@ -1685,18 +1904,41 @@ def main():
             MessageHandler(filters.Text(["📝 Анонс"]), start),
         ],
         states={
-            DATE:     [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_date)],
-            LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_location)],
-            TIME:     [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_time)],
-            ROUTE:    [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_route)],
-            DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_duration)],
-            LEVEL:    [CallbackQueryHandler(get_level, pattern="^level_")],
-            CONTACT:  [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_contact)],
+            # На DATE кнопки «Назад» нет — принимаем любой текст кроме меню
+            DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, get_date),
+            ],
+            # На LOCATION кнопка «Назад» возвращает на DATE
+            LOCATION: [
+                MessageHandler(filters.Text([BACK_TEXT]), back_to_date),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu & _back_filter, get_location),
+            ],
+            TIME: [
+                MessageHandler(filters.Text([BACK_TEXT]), back_to_location),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu & _back_filter, get_time),
+            ],
+            ROUTE: [
+                MessageHandler(filters.Text([BACK_TEXT]), back_to_time),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu & _back_filter, get_route),
+            ],
+            DURATION: [
+                MessageHandler(filters.Text([BACK_TEXT]), back_to_route),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu & _back_filter, get_duration),
+            ],
+            LEVEL: [
+                CallbackQueryHandler(get_level, pattern="^level_"),
+            ],
+            CONTACT: [
+                MessageHandler(filters.Text([BACK_TEXT]), back_to_duration),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu & _back_filter, get_contact),
+            ],
             PHOTO: [
                 CallbackQueryHandler(photo_choice, pattern="^(add_photo|skip_photo)$"),
                 MessageHandler(filters.PHOTO, get_announce_photo),
             ],
-            CONFIRM: [CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$")],
+            CONFIRM: [
+                CallbackQueryHandler(confirm_announce, pattern="^announce_(submit|restart)$"),
+            ],
         },
         fallbacks=[
             CommandHandler("start", start),
@@ -1785,6 +2027,15 @@ def main():
 
     # Модерация
     app.add_handler(CallbackQueryHandler(moderate,          pattern="^(approve|reject):"))
+    # Редактирование анонса на модерации (Вариант B)
+    app.add_handler(CallbackQueryHandler(modedit_start,     pattern="^modedit:"))
+    app.add_handler(CallbackQueryHandler(modedit_field,     pattern="^medf:"))
+    app.add_handler(CallbackQueryHandler(modedit_back,      pattern="^medback:"))
+    # Ввод нового значения поля — только для ADMIN_ID, только когда активен режим правки
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID),
+        modedit_value,
+    ))
     # Удаление анонсов из расписания
     app.add_handler(CallbackQueryHandler(deleteschedule_cb, pattern="^delschedule:"))
     # Кнопки «Присоединиться» и «Участники» под анонсом в канале
