@@ -1194,27 +1194,30 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             ptype = post_data["type"]
             if ptype == "announce":
-                # Клавиатура «Присоединиться» — публикуем вместе с постом
-                join_keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🙋 Присоединиться (0)", callback_data="join:join"),
-                ]])
+                # Сообщение 1 — чистый анонс БЕЗ кнопок → нативные комментарии работают
                 if post_data["photo_id"]:
-                    sent = await ctx.bot.send_photo(
+                    await ctx.bot.send_photo(
                         CHANNEL_ID, photo=post_data["photo_id"],
-                        caption=post_data["text"], parse_mode="Markdown",
-                        reply_markup=join_keyboard)
+                        caption=post_data["text"], parse_mode="Markdown")
                 else:
-                    sent = await ctx.bot.send_message(
-                        CHANNEL_ID, text=post_data["text"], parse_mode="Markdown",
-                        reply_markup=join_keyboard)
-                # Сохраняем данные об участниках, привязанные к message_id
+                    await ctx.bot.send_message(
+                        CHANNEL_ID, text=post_data["text"], parse_mode="Markdown")
+
+                # Сообщение 2 — только кнопки «Присоединиться» / «Участники»
+                join_msg = await ctx.bot.send_message(
+                    CHANNEL_ID,
+                    "👇 Нажми чтобы присоединиться к прогулке:",
+                    reply_markup=_join_keyboard(None, 0))
+
+                # Сохраняем список участников, привязанный к message_id второго сообщения
                 joins = ctx.bot_data.setdefault("joins", {})
-                joins[str(sent.message_id)] = []   # список {"user_id": ..., "name": ...}
+                joins[str(join_msg.message_id)] = []
+
                 schedule = ctx.bot_data.setdefault("schedule", [])
                 entry = {
                     **post_data["schedule_entry"],
-                    "added_at":  datetime.now(VLAD_TZ).isoformat(),
-                    "message_id": str(sent.message_id),
+                    "added_at":   datetime.now(VLAD_TZ).isoformat(),
+                    "message_id": str(join_msg.message_id),
                 }
                 schedule.append(entry)
                 ctx.bot_data["schedule"] = schedule[-20:]
@@ -1269,14 +1272,19 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  КНОПКА «ПРИСОЕДИНИТЬСЯ» К ПРОГУЛКЕ
 # ══════════════════════════════════════════════════════
 
-def _join_keyboard(msg_id: str, count: int) -> InlineKeyboardMarkup:
-    """Строит клавиатуру под анонсом: кнопка Присоединиться + кнопка Участники (если есть)."""
+def _join_keyboard(msg_id, count: int) -> InlineKeyboardMarkup:
+    """
+    Строит клавиатуру под вторым сообщением анонса.
+    msg_id=None допускается при первой отправке — бот обновит callback_data
+    после получения реального message_id через join_cb (берёт из q.message.message_id).
+    """
+    mid = str(msg_id) if msg_id is not None else "pending"
     row = [InlineKeyboardButton(
-        f"🙋 Присоединиться ({count})", callback_data=f"join:{msg_id}"
+        f"🙋 Присоединиться ({count})", callback_data=f"join:{mid}"
     )]
     if count > 0:
         row.append(InlineKeyboardButton(
-            f"👥 Участники", callback_data=f"joinlist:{msg_id}"
+            "👥 Участники", callback_data=f"joinlist:{mid}"
         ))
     return InlineKeyboardMarkup([row])
 
@@ -1286,24 +1294,28 @@ async def join_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Обрабатывает нажатие «🙋 Присоединиться».
     Первое нажатие — добавляет пользователя.
     Повторное — убирает (toggle).
-    Работает в канале: callback_query приходит от любого подписчика.
+    Если msg_id == "pending" — берём реальный message_id из q.message и мигрируем запись.
     """
-    q = update.callback_query
-    # Не отвечаем show_alert сразу — чтобы не тормозить
-    msg_id  = q.data.split(":", 1)[1]
+    q      = update.callback_query
+    msg_id = q.data.split(":", 1)[1]
+    joins  = ctx.bot_data.setdefault("joins", {})
 
-    # msg_id при первичной публикации хранится буквально как str(sent.message_id).
-    # Но при нажатии q.message.message_id может быть int — приводим к str.
-    if msg_id == "join":
-        # fallback: старые записи без message_id в callback_data
-        msg_id = str(q.message.message_id)
+    # Миграция «pending» → реальный message_id при первом нажатии
+    real_id = str(q.message.message_id)
+    if msg_id == "pending":
+        # Переносим запись из "pending" в реальный id (если есть)
+        if "pending" in joins:
+            joins[real_id] = joins.pop("pending")
+        else:
+            joins.setdefault(real_id, [])
+        msg_id = real_id
+    else:
+        joins.setdefault(msg_id, [])
 
-    joins     = ctx.bot_data.setdefault("joins", {})
-    attendees = joins.setdefault(msg_id, [])
+    attendees = joins[msg_id]
 
-    user      = q.from_user
-    user_id   = user.id
-    # Имя для отображения
+    user    = q.from_user
+    user_id = user.id
     if user.username:
         display = f"@{user.username}"
     elif user.first_name:
@@ -1311,7 +1323,7 @@ async def join_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         display = f"id:{user_id}"
 
-    # Toggle: если уже в списке — убираем, иначе добавляем
+    # Toggle
     existing = next((a for a in attendees if a["user_id"] == user_id), None)
     if existing:
         attendees.remove(existing)
@@ -1324,7 +1336,7 @@ async def join_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         await q.edit_message_reply_markup(reply_markup=_join_keyboard(msg_id, count))
     except Exception:
-        pass   # Если сообщение не изменилось — молча игнорируем
+        pass
 
 
 async def joinlist_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1739,16 +1751,71 @@ async def addpoints(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown")
 
 async def backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Резервная копия рейтинга одним сообщением для /restoreratings.
+    Просто скопировать целиком и вставить после деплоя.
+    """
     if update.effective_user.id != ADMIN_ID:
         return
     ratings = _ratings(ctx.bot_data)
     if not ratings:
         await update.message.reply_text("📊 Рейтинг пуст — нечего сохранять.")
         return
-    lines = ["📋 Резервная копия рейтинга\n(скопируй и сохрани, отправь команды по одной после деплоя)\n"]
+    rows = ["/restoreratings"]
     for username, data in sorted(ratings.items(), key=lambda x: x[1]["points"], reverse=True):
-        lines.append(f"/addpoints {username} {data['points']}")
-    await update.message.reply_text("\n".join(lines))
+        rows.append(f"@{username} {data['points']}")
+    text = "\n".join(rows)
+    await update.message.reply_text(
+        f"📋 *Резервная копия рейтинга*\n"
+        f"_Скопируй сообщение ниже целиком и отправь боту после деплоя:_\n\n"
+        f"`{text}`",
+        parse_mode="Markdown")
+
+
+async def restoreratings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Восстановление рейтинга одним сообщением.
+    Формат:
+        /restoreratings
+        @maximvk 5
+        @anna 3
+    Полностью заменяет текущий рейтинг.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        return
+    raw_lines = update.message.text.strip().splitlines()
+    data_lines = [
+        l.strip() for l in raw_lines
+        if l.strip() and not l.strip().startswith("/restoreratings")
+    ]
+    if not data_lines:
+        await update.message.reply_text(
+            "⚠️ Нет данных для восстановления.\n\n"
+            "Формат:\n`/restoreratings\n@maximvk 5\n@anna 3`",
+            parse_mode="Markdown")
+        return
+    ratings  = ctx.bot_data.setdefault("ratings", {})
+    restored = []
+    errors   = []
+    for line in data_lines:
+        parts = line.split()
+        if len(parts) != 2:
+            errors.append(f"⚠️ Пропущена строка: `{line}`")
+            continue
+        username = parts[0].lstrip("@")
+        try:
+            pts = int(parts[1])
+        except ValueError:
+            errors.append(f"⚠️ Не число: `{line}`")
+            continue
+        ratings[username] = {"points": pts}
+        restored.append(f"@{_escape_md(username)} — {pts} {_pts_word(pts)} ({_get_rank(pts)})")
+    result = [f"✅ *Рейтинг восстановлен* — {len(restored)} участников:\n"]
+    result.extend(restored)
+    if errors:
+        result.append("\n" + "\n".join(errors))
+    await update.message.reply_text("\n".join(result), parse_mode="Markdown")
+
 
 async def year_end_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(VLAD_TZ)
@@ -2020,8 +2087,9 @@ def main():
 
     # Команды администратора
     app.add_handler(CommandHandler("addpoints",      addpoints))
-    app.add_handler(CommandHandler("backup",         backup))
-    app.add_handler(CommandHandler("schedulebackup", schedulebackup))
+    app.add_handler(CommandHandler("backup",          backup))
+    app.add_handler(CommandHandler("restoreratings",  restoreratings))
+    app.add_handler(CommandHandler("schedulebackup",  schedulebackup))
     app.add_handler(CommandHandler("addschedule",    addschedule))
     app.add_handler(CommandHandler("deleteschedule", deleteschedule))
 
