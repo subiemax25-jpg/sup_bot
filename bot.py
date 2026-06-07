@@ -77,6 +77,15 @@ RANKS = [
     (1,  "🪸 Планктон"),
 ]
 
+# Описания уровней — используются при выборе в боте и в посте канала
+LEVEL_DESCRIPTIONS = {
+    "🏄 Все уровни":               "Берём всех без исключения. Видел САП — уже подходишь.",
+    "🐣 Для новичков":             "Первый раз на САПе или был пару раз. Весло держишь правильно только на фото.",
+    "🦆 Уверенные, но не опытные": "Уже стоишь на доске и гребёшь в нужную сторону. В лёгкую волну не падаешь. Почти.",
+    "💪 Опытные":                  "Уверенно держишься в ветер и волну, знаешь как вести себя на открытой воде. Падаешь редко — и то с достоинством.",
+    "🆘 Спаси и сохрани!":         "Ветер 12 м/с, волна 1 м. Только те, кто понимает на что идёт — и всё равно идёт.",
+}
+
 def _get_rank(points: int) -> str:
     for min_pts, title in RANKS:
         if points >= min_pts:
@@ -590,8 +599,16 @@ async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💪 Опытные",                 callback_data="level_advanced")],
         [InlineKeyboardButton("🆘 Спаси и сохрани!",        callback_data="level_sos")],
     ]
+    level_info = (
+        "🎯 *Выбери уровень подготовки:*\n\n"
+        "🏄 *Все уровни* — Берём всех без исключения. Видел САП — уже подходишь.\n\n"
+        "🐣 *Для новичков* — Первый раз на САПе или был пару раз. Весло держишь правильно только на фото.\n\n"
+        "🦆 *Уверенные, но не опытные* — Уже стоишь на доске и гребёшь в нужную сторону. В лёгкую волну не падаешь. Почти.\n\n"
+        "💪 *Опытные* — Уверенно держишься в ветер и волну, знаешь как вести себя на открытой воде. Падаешь редко — и то с достоинством.\n\n"
+        "🆘 *Спаси и сохрани!* — Ветер 12 м/с, волна 1 м. Только те, кто понимает на что идёт — и всё равно идёт."
+    )
     await update.message.reply_text(
-        "🎯 *Уровень подготовки?*",
+        level_info,
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(
@@ -649,14 +666,22 @@ async def get_announce_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return CONFIRM
 
 def build_post(d: dict) -> str:
+    level      = d.get("level", "")
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "")
+    level_line = (
+        f"🎯  *Уровень:* {_escape_md(level)}\n"
+        f"_└ {_escape_md(level_desc)}_\n"
+        if level_desc else
+        f"🎯  *Уровень:* {_escape_md(level)}\n"
+    )
     return (
-        f"🏄‍♂️ *САП-ПРОГУЛКА*\n{'━'*16}\n\n"
+        f"🏄\u200d♂️ *САП-ПРОГУЛКА*\n{'━'*16}\n\n"
         f"📅  *Дата:* {_escape_md(d['date'])}\n"
         f"⏰  *Сбор:* {_escape_md(d['time'])}\n"
         f"🕐  *Длительность:* {_escape_md(d['duration'])}\n"
         f"📍  *Место сбора:* {_escape_md(d['location'])}\n"
         f"🗺  *Маршрут:* {_escape_md(d['route'])}\n"
-        f"🎯  *Уровень:* {_escape_md(d['level'])}\n\n"
+        f"{level_line}\n"
         f"👤  *Предложил:* {_escape_md(d['contact'])}\n\n"
         f"#сап #сапсёрфинг #прогулка #paddle #sup"
     )
