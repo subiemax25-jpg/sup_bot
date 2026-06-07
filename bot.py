@@ -584,10 +584,11 @@ async def get_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["duration"] = update.message.text.strip()
     # После длительности — уровень (inline), убираем reply-клавиатуру
     keyboard = [
-        [InlineKeyboardButton("🐣 Для новичков",  callback_data="level_beginner")],
-        [InlineKeyboardButton("🦆 Уже не тонем",  callback_data="level_middle")],
-        [InlineKeyboardButton("💪 Опытные",        callback_data="level_advanced")],
-        [InlineKeyboardButton("🏄 Все уровни",    callback_data="level_all")],
+        [InlineKeyboardButton("🏄 Все уровни",             callback_data="level_all")],
+        [InlineKeyboardButton("🐣 Для новичков",            callback_data="level_beginner")],
+        [InlineKeyboardButton("🦆 Уверенные, но не опытные", callback_data="level_middle")],
+        [InlineKeyboardButton("💪 Опытные",                 callback_data="level_advanced")],
+        [InlineKeyboardButton("🆘 Спаси и сохрани!",        callback_data="level_sos")],
     ]
     await update.message.reply_text(
         "🎯 *Уровень подготовки?*",
@@ -602,10 +603,11 @@ async def get_level(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     levels = {
-        "level_beginner": "🐣 Для новичков",
-        "level_middle":   "🦆 Уже не тонем",
         "level_all":      "🏄 Все уровни",
+        "level_beginner": "🐣 Для новичков",
+        "level_middle":   "🦆 Уверенные, но не опытные",
         "level_advanced": "💪 Опытные",
+        "level_sos":      "🆘 Спаси и сохрани!",
     }
     ctx.user_data["level"] = levels[q.data]
     await q.edit_message_text(f"Уровень: *{ctx.user_data['level']}* ✓", parse_mode="Markdown")
