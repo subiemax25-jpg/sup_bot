@@ -980,14 +980,13 @@ async def review_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return REVIEW_MEDIA
 
     caption    = _build_review_caption(comment, author, participants)
-    will_split = len(caption) > CAPTION_LIMIT
-    if will_split:
+    if len(caption) <= CAPTION_LIMIT:
+        format_note = f"\n\n📝 _{len(comment)} симв. — выйдет одним постом: медиа + текст_"
+    else:
         format_note = (
             f"\n\n📝 _Текст длинный ({len(comment)} симв.) — выйдет двумя постами:_\n"
-            "_1️⃣ Текст отзыва   2️⃣ Фото/видео_"
+            "_1️⃣ Фото/видео   2️⃣ Текст отзыва_"
         )
-    else:
-        format_note = f"\n\n📝 _{len(comment)} симв. — выйдет одним постом_"
 
     parts_line = f"\n👥 Участники: {_escape_md(participants)}" if participants else ""
     keyboard = InlineKeyboardMarkup([[
@@ -1033,7 +1032,10 @@ async def confirm_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Текстовое сообщение с кнопками модерации
         parts_hint = f"\n👥 Участники: {participants}" if participants else ""
         caption_preview = _build_review_caption(comment, author_info, participants)
-        split_note = "\n\n⚠️ _Длинный отзыв — выйдет двумя постами в канале_" if len(caption_preview) > CAPTION_LIMIT else ""
+        split_note = (
+            "\n\n⚠️ _Длинный отзыв — выйдет двумя постами: сначала фото/видео, потом текст_"
+            if len(caption_preview) > CAPTION_LIMIT else ""
+        )
 
         # Если комментарий очень длинный — показываем обрезанную версию администратору
         # (полный текст уйдёт в канал при публикации)
@@ -1249,18 +1251,22 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 schedule.append(entry)
                 ctx.bot_data["schedule"] = schedule[-20:]
             elif ptype == "review":
-                caption = _build_review_caption(
+                review_text = _build_review_caption(
                     post_data["comment"],
                     post_data["author"],
                     post_data.get("participants", ""),
                 )
-                if len(caption) <= CAPTION_LIMIT:
-                    # Короткий отзыв — один пост: альбом с подписью
-                    await _send_media_group(ctx, CHANNEL_ID, post_data["media"], caption=caption)
+                if len(review_text) <= CAPTION_LIMIT:
+                    # Короткий отзыв — один пост: медиа с полным текстом как подписью
+                    await _send_media_group(
+                        ctx, CHANNEL_ID, post_data["media"], caption=review_text)
                 else:
-                    # Длинный отзыв — два поста: сначала текст, потом альбом
-                    await ctx.bot.send_message(CHANNEL_ID, text=caption, parse_mode="Markdown")
-                    await _send_media_group(ctx, CHANNEL_ID, post_data["media"])
+                    # Длинный отзыв — два поста: сначала медиа, потом текст
+                    await _send_media_group(
+                        ctx, CHANNEL_ID, post_data["media"],
+                        caption="📸 *Медиа к отзыву* 👇👇👇")
+                    await ctx.bot.send_message(
+                        CHANNEL_ID, text=review_text, parse_mode="Markdown")
             elif ptype == "news":
                 if post_data["photo_id"]:
                     await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
