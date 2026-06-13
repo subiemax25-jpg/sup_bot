@@ -1,5 +1,5 @@
 """
-🏄 САП-бот: анонсы + отзывы + новости + погода + расписание + рейтинг
+🏄 САП-бот: анонсы + отзывы + барахолка + погода + расписание + рейтинг
 =====================================================================
 Погода:
   - Open-Meteo (hourly)    — ветер, температура, осадки; 3 локации
@@ -51,7 +51,7 @@ def _main_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["📝 Анонс",       "📸 Отзыв"],
-            ["🌤 Погода",      "📰 Новость"],
+            ["🌤 Погода",      "🛒 Барахолка"],
             ["📅 Расписание",  "🏆 Рейтинг"],
             ["🎰 Колесо фортуны"],
         ],
@@ -64,7 +64,9 @@ def _main_keyboard():
 DATE, LOCATION, TIME, ROUTE, DURATION, LEVEL, CONTACT, PHOTO, CONFIRM = range(9)
 # REVIEW: добавлен шаг REVIEW_PARTICIPANTS между REVIEW_AUTHOR и REVIEW_MEDIA
 REVIEW_COMMENT, REVIEW_AUTHOR, REVIEW_PARTICIPANTS, REVIEW_MEDIA, REVIEW_CONFIRM = range(9, 14)
-NEWS_TEXT, NEWS_PHOTO, NEWS_CONFIRM = range(14, 17)
+# БАРАХОЛКА: категория → описание → состояние → цена → место → фото → контакт → подтверждение
+(MARKET_CATEGORY, MARKET_DESC, MARKET_CONDITION, MARKET_PRICE,
+ MARKET_LOCATION, MARKET_PHOTO, MARKET_CONTACT, MARKET_CONFIRM) = range(14, 22)
 
 # ──────────────────────────────────────────────
 #  РЕЙТИНГ
@@ -1099,101 +1101,244 @@ CAPTION_LIMIT = 1024
 # Тексты кнопок постоянного меню — нельзя допускать их захват диалогами
 MENU_TEXTS = [
     "📝 Анонс", "📸 Отзыв", "🌤 Погода",
-    "📰 Новость", "📅 Расписание", "🏆 Рейтинг", "🎰 Колесо фортуны",
+    "🛒 Барахолка", "📅 Расписание", "🏆 Рейтинг", "🎰 Колесо фортуны",
 ]
 _not_menu = ~filters.Text(MENU_TEXTS)
 
 
 # ══════════════════════════════════════════════════════
-#  НОВОСТЬ
+#  БАРАХОЛКА
 # ══════════════════════════════════════════════════════
+#
+#  Продажа сап-снаряжения. Пошаговая форма → модерация → канал.
+#  Связь с продавцом — inline-кнопка «Написать продавцу» (URL t.me).
+#  ВАЖНО: наличие inline-кнопки убирает нативные комментарии под постом —
+#  это и есть нужное поведение (вопросы идут в личку, а не в комменты).
+#  Поэтому фото только ОДНО: к альбому (media_group) кнопку прикрепить нельзя.
 
-async def news_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+# Категории и состояния — индекс кодируется в callback_data
+MARKET_CATEGORIES = [
+    "🏄 Доска",
+    "🚣 Весло",
+    "🤿 Гидрокостюм",
+    "🎒 Аксессуары",
+    "📦 Другое",
+]
+MARKET_CONDITIONS = [
+    "🆕 Новое",
+    "👍 Б/у, отличное",
+    "🔧 Б/у, рабочее",
+]
+
+# Telegram-username: начинается с буквы, всего 5–32 символа.
+# Ведущая буква обязательна — так телефон (+7999...) не примем за username.
+_USERNAME_RE = re.compile(r"@?([A-Za-z][A-Za-z0-9_]{4,31})")
+
+def _market_contact(text: str):
+    """Из произвольного текста извлекает (display, url) для связи с продавцом.
+    Нашёлся валидный @username → вернёт ссылку t.me; иначе url=None (телефон и т.п.)."""
+    text = (text or "").strip()
+    m = _USERNAME_RE.fullmatch(text) or _USERNAME_RE.search(text)
+    if m:
+        uname = m.group(1)
+        return f"@{uname}", f"https://t.me/{uname}"
+    return text, None
+
+def _market_category_kb():
+    rows = [[InlineKeyboardButton(c, callback_data=f"mkcat:{i}")]
+            for i, c in enumerate(MARKET_CATEGORIES)]
+    return InlineKeyboardMarkup(rows)
+
+def _market_condition_kb():
+    rows = [[InlineKeyboardButton(c, callback_data=f"mkcond:{i}")]
+            for i, c in enumerate(MARKET_CONDITIONS)]
+    return InlineKeyboardMarkup(rows)
+
+def build_market_post(d: dict) -> str:
+    """Текст объявления для публикации в канале."""
+    lines = [
+        f"🛒 *БАРАХОЛКА · {_escape_md(d.get('category', ''))}*",
+        "━" * 16,
+        "",
+        _escape_md(d.get("desc", "")),
+        "",
+        f"📦 *Состояние:* {_escape_md(d.get('condition', ''))}",
+        f"💰 *Цена:* {_escape_md(d.get('price', ''))}",
+        f"📍 {_escape_md(d.get('location', ''))}",
+    ]
+    # Контакт пишем в текст ТОЛЬКО если кнопки не будет (нет ссылки t.me)
+    if not d.get("contact_url") and d.get("contact_display"):
+        lines.append(f"📞 *Связь:* {_escape_md(d['contact_display'])}")
+    # Пометка про фото — только когда фото приложено (одно)
+    if d.get("photo_id"):
+        lines.append("")
+        lines.append("_📷 Нужно больше фото — напиши продавцу._")
+    lines += ["", "#барахолка #сап #sup"]
+    return "\n".join(lines)
+
+def _market_seller_kb(url):
+    """Кнопка связи с продавцом (URL). Её наличие убирает комментарии под постом."""
+    if not url:
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✍️ Написать продавцу", url=url)
+    ]])
+
+
+async def market_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
-        "📰 *Новость для сообщества*\n\n✍️ Напиши текст новости:",
+        "🛒 *Барахолка*\n\nПродаёшь сап-снаряжение? Оформим объявление.\n\n"
+        "Что продаёшь? Выбери категорию 👇",
         parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove())
-    return NEWS_TEXT
+        reply_markup=_market_category_kb())
+    return MARKET_CATEGORY
 
-async def news_get_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_text"] = update.message.text.strip()
-    keyboard = [
-        [InlineKeyboardButton("📷 Добавить фото", callback_data="news_add_photo")],
-        [InlineKeyboardButton("⏭ Без фото",       callback_data="news_skip_photo")],
-    ]
+async def market_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    idx = int(q.data.split(":", 1)[1])
+    ctx.user_data["category"] = MARKET_CATEGORIES[idx]
+    await q.edit_message_text(
+        f"Категория: *{MARKET_CATEGORIES[idx]}*\n\n"
+        "✍️ Опиши, что продаёшь.\n"
+        "_Пример: Starboard iGO 11'2, надувная, комплект с насосом и плавником_",
+        parse_mode="Markdown")
+    return MARKET_DESC
+
+async def market_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["desc"] = update.message.text.strip()
     await update.message.reply_text(
-        "🖼 Хочешь добавить фото к новости?",
-        reply_markup=InlineKeyboardMarkup(keyboard))
-    return NEWS_PHOTO
+        "📦 Состояние? Выбери 👇",
+        reply_markup=_market_condition_kb())
+    return MARKET_CONDITION
 
-async def news_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def market_condition(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data == "news_add_photo":
-        await q.edit_message_text("📷 Отправь фото:")
-        return NEWS_PHOTO
-    ctx.user_data["news_photo_id"] = None
-    await _show_news_preview(q.message, ctx)
-    return NEWS_CONFIRM
+    idx = int(q.data.split(":", 1)[1])
+    ctx.user_data["condition"] = MARKET_CONDITIONS[idx]
+    await q.edit_message_text(
+        f"Состояние: *{MARKET_CONDITIONS[idx]}*\n\n"
+        "💰 Цена?\n_Пример: 28 000 ₽, торг — или просто: договорная_",
+        parse_mode="Markdown")
+    return MARKET_PRICE
 
-async def news_get_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["news_photo_id"] = update.message.photo[-1].file_id
-    await _show_news_preview(update.message, ctx)
-    return NEWS_CONFIRM
+async def market_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["price"] = update.message.text.strip()
+    await update.message.reply_text(
+        "📍 Где забрать / город?\n_Пример: Владивосток, самовывоз с Чуркина_",
+        parse_mode="Markdown")
+    return MARKET_LOCATION
 
-async def _show_news_preview(message, ctx):
-    text     = ctx.user_data.get("news_text", "")
-    photo_id = ctx.user_data.get("news_photo_id")
+async def market_location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["location"] = update.message.text.strip()
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📷 Добавить фото", callback_data="market_add_photo")],
+        [InlineKeyboardButton("⏭ Без фото",       callback_data="market_skip_photo")],
+    ])
+    await update.message.reply_text(
+        "🖼 Добавишь фото?\n\n"
+        "⚠️ Можно загрузить только одно фото. Больше — покупатели запросят у тебя в личке.",
+        reply_markup=keyboard)
+    return MARKET_PHOTO
+
+async def market_photo_choice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "market_add_photo":
+        await q.edit_message_text("📷 Пришли одно фото:")
+        return MARKET_PHOTO
+    ctx.user_data["photo_id"] = None
+    await _market_ask_contact(q.message, q.from_user, ctx)
+    return MARKET_CONTACT
+
+async def market_get_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["photo_id"] = update.message.photo[-1].file_id
+    await _market_ask_contact(update.message, update.effective_user, ctx)
+    return MARKET_CONTACT
+
+async def _market_ask_contact(message, user, ctx):
+    kb = None
+    if user and user.username:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✍️ Писать мне ( @{user.username} )",
+                                 callback_data="market_contact_self")
+        ]])
+    await message.reply_text(
+        "👤 Как покупателю с тобой связаться?\n\n"
+        "Нажми кнопку ниже — и покупатели будут писать тебе в личку. "
+        "Или пришли свой @username (либо телефон).",
+        reply_markup=kb)
+
+async def market_contact_self(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user = q.from_user
+    ctx.user_data["contact_display"] = f"@{user.username}"
+    ctx.user_data["contact_url"]     = f"https://t.me/{user.username}"
+    await _show_market_preview(q.message, ctx)
+    return MARKET_CONFIRM
+
+async def market_get_contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    display, url = _market_contact(update.message.text)
+    ctx.user_data["contact_display"] = display
+    ctx.user_data["contact_url"]     = url
+    await _show_market_preview(update.message, ctx)
+    return MARKET_CONFIRM
+
+async def _show_market_preview(message, ctx):
+    d = ctx.user_data
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Отправить на проверку", callback_data="news_submit"),
-        InlineKeyboardButton("✏️ Начать заново",         callback_data="news_restart"),
+        InlineKeyboardButton("✅ Отправить на проверку", callback_data="market_submit"),
+        InlineKeyboardButton("✏️ Начать заново",         callback_data="market_restart"),
     ]])
-    preview = (
-        f"*Твоя новость:*\n\n"
-        f"📰 {_escape_md(text)}\n\n"
-        f"{'📎 Фото прикреплено' if photo_id else '📎 Без фото'}"
-    )
-    await message.reply_text(preview, parse_mode="Markdown", reply_markup=keyboard)
+    photo_note = "📎 Фото прикреплено" if d.get("photo_id") else "📎 Без фото"
+    if d.get("contact_url"):
+        contact_note = f"✍️ Связь: кнопка «Написать продавцу» → {_escape_md(d.get('contact_display', ''))}"
+    else:
+        contact_note = (f"📞 Связь: {_escape_md(d.get('contact_display', ''))} "
+                        "(без кнопки → под постом останутся комментарии)")
+    await message.reply_text(
+        f"*Вот твоё объявление:*\n\n{build_market_post(d)}\n\n"
+        f"{'─'*16}\n{photo_note}\n{contact_note}",
+        parse_mode="Markdown",
+        reply_markup=keyboard)
 
-async def confirm_news(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def confirm_market(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data == "news_restart":
-        await q.edit_message_text("↩️ Начинаем заново. Нажми 📰 Новость")
+    if q.data == "market_restart":
+        await q.edit_message_text("↩️ Начинаем заново. Нажми 🛒 Барахолка")
         return ConversationHandler.END
 
     author      = q.from_user
     author_info = f"@{author.username}" if author.username else f"id:{author.id}"
-    text        = ctx.user_data.get("news_text", "")
-    photo_id    = ctx.user_data.get("news_photo_id")
+    d           = ctx.user_data
+    post_text   = build_market_post(d)
 
-    post_text = (
-        f"📰 *НОВОСТЬ*\n{'━'*16}\n\n"
-        f"{_escape_md(text)}\n\n"
-        f"#сап #новость"
-    )
-
-    ctx.bot_data.setdefault("pending", {})[f"news_{author.id}"] = {
-        "type":           "news",
+    ctx.bot_data.setdefault("pending", {})[f"market_{author.id}"] = {
+        "type":           "market",
         "text":           post_text,
-        "photo_id":       photo_id,
+        "photo_id":       d.get("photo_id"),
+        "contact_url":    d.get("contact_url"),
         "author_display": author_info,
     }
 
     mod_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:news_{author.id}"),
-        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:news_{author.id}"),
+        InlineKeyboardButton("✅ Опубликовать", callback_data=f"approve:market_{author.id}"),
+        InlineKeyboardButton("❌ Отклонить",    callback_data=f"reject:market_{author.id}"),
     ]])
-    if photo_id:
-        await ctx.bot.send_photo(ADMIN_ID, photo=photo_id)
+    if d.get("photo_id"):
+        await ctx.bot.send_photo(ADMIN_ID, photo=d["photo_id"])
     await ctx.bot.send_message(
         ADMIN_ID,
-        f"📰 *Новость от* {_escape_md(author_info)}\n{'─'*28}\n\n{post_text}\n\n{'─'*28}\nОпубликовать в канал?",
+        f"🛒 *Объявление от* {_escape_md(author_info)}\n{'─'*28}\n\n{post_text}\n\n{'─'*28}\n"
+        "⚠️ Только сап-снаряжение. Опубликовать в канал?",
         parse_mode="Markdown",
         reply_markup=mod_keyboard)
     await q.edit_message_text(
-        "⏳ *Новость отправлена на проверку.*\nКак только одобрят — появится в канале. Спасибо! 🙌",
+        "⏳ *Объявление отправлено на проверку.*\nКак только одобрят — появится в канале. Спасибо! 🙌",
         parse_mode="Markdown")
     await ctx.bot.send_message(author.id, "Выбери действие:", reply_markup=_main_keyboard())
     return ConversationHandler.END
@@ -1267,20 +1412,27 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         caption="📸 *Медиа к отзыву* 👇👇👇")
                     await ctx.bot.send_message(
                         CHANNEL_ID, text=review_text, parse_mode="Markdown")
-            elif ptype == "news":
-                if post_data["photo_id"]:
-                    await ctx.bot.send_photo(CHANNEL_ID, photo=post_data["photo_id"],
-                                             caption=post_data["text"], parse_mode="Markdown")
+            elif ptype == "market":
+                # Объявление барахолки. Кнопка «Написать продавцу» (если есть ссылка)
+                # делает две вещи: даёт связь в личку и убирает комментарии под постом.
+                seller_kb = _market_seller_kb(post_data.get("contact_url"))
+                if post_data.get("photo_id"):
+                    await ctx.bot.send_photo(
+                        CHANNEL_ID, photo=post_data["photo_id"],
+                        caption=post_data["text"], parse_mode="Markdown",
+                        reply_markup=seller_kb)
                 else:
-                    await ctx.bot.send_message(CHANNEL_ID, text=post_data["text"], parse_mode="Markdown")
+                    await ctx.bot.send_message(
+                        CHANNEL_ID, text=post_data["text"], parse_mode="Markdown",
+                        reply_markup=seller_kb)
         except Exception as e:
             await q.edit_message_text(f"⚠️ Ошибка при публикации:\n{e}")
             return
 
-        label          = {"announce": "Анонс", "review": "Отзыв", "news": "Новость"}.get(post_data["type"], "Пост")
+        label          = {"announce": "Анонс", "review": "Отзыв", "market": "Объявление"}.get(post_data["type"], "Пост")
         author_display = post_data.get("author_display", f"id:{user_id}")
         pts            = "2" if post_data["type"] == "review" else "1"
-        hint           = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {pts}" if post_data["type"] != "news" else ""
+        hint           = f"\n💡 Не забудь начислить очки: /addpoints {author_display.lstrip('@')} {pts}" if post_data["type"] != "market" else ""
         await q.edit_message_text(f"✅ {label} опубликован!\n\n👤 Автор: {author_display}{hint}")
         try:
             await ctx.bot.send_message(user_id, "🎉 *Твой пост одобрен и опубликован в канале!*",
@@ -1289,7 +1441,7 @@ async def moderate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     elif action == "reject":
-        label = {"announce": "Анонс", "review": "Отзыв", "news": "Новость"}.get(post_data["type"], "Пост")
+        label = {"announce": "Анонс", "review": "Отзыв", "market": "Объявление"}.get(post_data["type"], "Пост")
         await q.edit_message_text(f"❌ {label} отклонён.")
         try:
             await ctx.bot.send_message(
@@ -1968,7 +2120,7 @@ async def _menu_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """
     Вызывается когда пользователь нажимает кнопку меню во время активного диалога.
     Завершает текущий диалог и сразу выполняет нужное действие.
-    Для диалоговых функций (Анонс/Отзыв/Новость) просит нажать кнопку ещё раз,
+    Для диалоговых функций (Анонс/Отзыв/Барахолка) просит нажать кнопку ещё раз,
     т.к. запустить новый диалог изнутри fallback невозможно.
     """
     ctx.user_data.clear()
@@ -2079,22 +2231,32 @@ def main():
         allow_reentry=True, per_message=False,
     )
 
-    # Диалог: Новость
-    news_conv = ConversationHandler(
+    # Диалог: Барахолка
+    market_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("news", news_start),
-            MessageHandler(filters.Text(["📰 Новость"]), news_start),
+            CommandHandler("market", market_start),
+            MessageHandler(filters.Text(["🛒 Барахолка"]), market_start),
         ],
         states={
-            NEWS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, news_get_text)],
-            NEWS_PHOTO: [
-                CallbackQueryHandler(news_photo_choice, pattern="^news_(add_photo|skip_photo)$"),
-                MessageHandler(filters.PHOTO, news_get_photo),
+            MARKET_CATEGORY:  [CallbackQueryHandler(market_category, pattern="^mkcat:")],
+            MARKET_DESC:      [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, market_desc)],
+            MARKET_CONDITION: [CallbackQueryHandler(market_condition, pattern="^mkcond:")],
+            MARKET_PRICE:     [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, market_price)],
+            MARKET_LOCATION:  [MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, market_location)],
+            MARKET_PHOTO: [
+                CallbackQueryHandler(market_photo_choice, pattern="^market_(add_photo|skip_photo)$"),
+                MessageHandler(filters.PHOTO, market_get_photo),
             ],
-            NEWS_CONFIRM: [CallbackQueryHandler(confirm_news, pattern="^news_(submit|restart)$")],
+            MARKET_CONTACT: [
+                CallbackQueryHandler(market_contact_self, pattern="^market_contact_self$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & _not_menu, market_get_contact),
+            ],
+            MARKET_CONFIRM: [
+                CallbackQueryHandler(confirm_market, pattern="^market_(submit|restart)$"),
+            ],
         },
         fallbacks=[
-            CommandHandler("news", news_start),
+            CommandHandler("market", market_start),
             MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
         ],
         allow_reentry=True, per_message=False,
@@ -2102,7 +2264,7 @@ def main():
 
     app.add_handler(announce_conv)
     app.add_handler(review_conv)
-    app.add_handler(news_conv)
+    app.add_handler(market_conv)
 
     # Кнопки меню → команды
     app.add_handler(MessageHandler(filters.Text(["🌤 Погода"]),          weather))
