@@ -22,6 +22,7 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     InputMediaPhoto, InputMediaVideo,
     ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -36,6 +37,9 @@ BOT_TOKEN  = os.environ.get("BOT_TOKEN",  "")
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
 ADMIN_ID   = int(os.environ.get("ADMIN_ID", "0"))
 WWO_KEY    = os.environ.get("WWO_KEY",    "")
+# @username владельца для кнопки «написать мне» в приветствии (без @ — тоже ок).
+# Если не задан — приветствие даст ссылку на профиль по ADMIN_ID (менее надёжно).
+OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "").lstrip("@")
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -494,6 +498,37 @@ async def menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Выбери действие:",
         reply_markup=_main_keyboard())
+
+
+async def welcome(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Приветствие на /start: описание бота + меню.
+    Возвращает ConversationHandler.END — чтобы корректно выходить из любого
+    активного диалога, если /start нажали посреди заполнения формы."""
+    ctx.user_data.clear()
+    raw = str(CHANNEL_ID)
+    channel = _escape_md(raw) if raw.startswith("@") else "нашего канала"
+    # Ссылка на владельца: по @username (надёжно) или по ADMIN_ID (запасной вариант)
+    if OWNER_USERNAME:
+        owner_link = f"[@{_escape_md(OWNER_USERNAME)}](https://t.me/{OWNER_USERNAME})"
+    else:
+        owner_link = f"[написать мне](tg://user?id={ADMIN_ID})"
+    await update.message.reply_text(
+        "🏄‍♂️ *Привет! Это бот сап-сообщества Владивостока.*\n\n"
+        f"Я — помощник канала {channel}. Через меня можно не только читать, "
+        "но и самому участвовать:\n\n"
+        "📝 *Анонс* — позвать народ на прогулку\n"
+        "📸 *Отзыв* — поделиться, как сходили\n"
+        "🌤 *Погода* — условия для сапа на острове Русский\n"
+        "🛒 *Барахолка* — продать или купить снаряжение\n"
+        "📅 *Расписание* — ближайшие выходы\n"
+        "🏆 *Рейтинг* — очки и звания за активность\n"
+        "🎰 *Колесо фортуны* — крутни на удачу\n\n"
+        "Анонсы, отзывы и объявления проходят модерацию и попадают в канал.\n\n"
+        f"💬 Я владелец канала и бота — по любым вопросам {owner_link}, не стесняйся.\n\n"
+        "Выбирай кнопку внизу 👇",
+        parse_mode="Markdown",
+        reply_markup=_main_keyboard())
+    return ConversationHandler.END
 
 
 # ══════════════════════════════════════════════════════
@@ -2142,9 +2177,48 @@ async def _menu_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  ЗАПУСК
 # ══════════════════════════════════════════════════════
 
+async def _post_init(app: Application):
+    """Задаёт список команд для меню «/» прямо из кода — BotFather не нужен.
+    Обновляется автоматически при каждом запуске бота."""
+    # Команды для всех пользователей
+    user_cmds = [
+        BotCommand("start",    "Приветствие и меню"),
+        BotCommand("announce", "Создать анонс прогулки"),
+        BotCommand("review",   "Оставить отзыв"),
+        BotCommand("market",   "Барахолка: продать снаряжение"),
+        BotCommand("schedule", "Ближайшие прогулки"),
+        BotCommand("weather",  "Прогноз погоды"),
+        BotCommand("top",      "Рейтинг участников"),
+        BotCommand("rank",     "Моё звание и очки"),
+        BotCommand("spin",     "Колесо фортуны"),
+        BotCommand("menu",     "Главное меню"),
+    ]
+    await app.bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
+
+    # Расширенный список только для администратора (в его личке с ботом)
+    if ADMIN_ID:
+        admin_cmds = user_cmds + [
+            BotCommand("addpoints",      "Начислить/снять очки"),
+            BotCommand("backup",         "Бэкап рейтинга (перед деплоем!)"),
+            BotCommand("restoreratings", "Восстановить рейтинг из бэкапа"),
+            BotCommand("addschedule",    "Добавить прогулку в расписание"),
+            BotCommand("deleteschedule", "Удалить прогулку из расписания"),
+            BotCommand("schedulebackup", "Бэкап расписания"),
+        ]
+        try:
+            await app.bot.set_my_commands(
+                admin_cmds, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+        except Exception as e:
+            logging.warning("Не удалось задать админские команды: %s", e)
+
+
 def main():
     persistence = PicklePersistence(filepath="bot_data.pkl")
-    app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
+    app = (Application.builder()
+           .token(BOT_TOKEN)
+           .persistence(persistence)
+           .post_init(_post_init)
+           .build())
 
     # Фильтр: не меню и не кнопка «Назад» — используется там где «Назад» не нужен
     _back_filter = ~filters.Text([BACK_TEXT])
@@ -2152,7 +2226,7 @@ def main():
     # Диалог: Анонс
     announce_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start),
+            CommandHandler("announce", start),
             MessageHandler(filters.Text(["📝 Анонс"]), start),
         ],
         states={
@@ -2193,7 +2267,8 @@ def main():
             ],
         },
         fallbacks=[
-            CommandHandler("start", start),
+            CommandHandler("announce", start),
+            CommandHandler("start", welcome),
             MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
         ],
         allow_reentry=True, per_message=False,
@@ -2226,6 +2301,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("review", review_start),
+            CommandHandler("start", welcome),
             MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
         ],
         allow_reentry=True, per_message=False,
@@ -2257,6 +2333,7 @@ def main():
         },
         fallbacks=[
             CommandHandler("market", market_start),
+            CommandHandler("start", welcome),
             MessageHandler(filters.Text(MENU_TEXTS), _menu_interrupt),
         ],
         allow_reentry=True, per_message=False,
@@ -2273,6 +2350,7 @@ def main():
     app.add_handler(MessageHandler(filters.Text(["🎰 Колесо фортуны"]),  spin))
 
     # Команды пользователей
+    app.add_handler(CommandHandler("start",    welcome))
     app.add_handler(CommandHandler("menu",     menu))
     app.add_handler(CommandHandler("schedule", schedule_cmd))
     app.add_handler(CommandHandler("weather",  weather))
